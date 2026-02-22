@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .DS_Store
 cache/
+# Generated outputs
+algorithm_comparison.png
+training_curves.png
+meeting_point_map.html

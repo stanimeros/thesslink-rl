@@ -1,6 +1,6 @@
 """
-Plot training progress from evaluations.npz (saved by EvalCallback during train.py).
-Shows how the policy improves over timesteps.
+Plot training progress from evaluations.npz (saved by EvalCallback during train_all_algos.py).
+Use for a single algorithm's curves; use plot_all_algos.py for multi-algo comparison.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
-DEFAULT_EVAL_PATH = Path(__file__).parent / "evaluations.npz"
+DEFAULT_EVAL_PATH = Path(__file__).parent / "policies" / "PPO" / "evaluations.npz"
 DEFAULT_OUTPUT = Path(__file__).parent / "training_curves.png"
 
 
@@ -24,7 +24,7 @@ def plot_training(
     eval_path = Path(eval_path)
     if not eval_path.exists():
         raise FileNotFoundError(
-            f"No evaluations found at {eval_path}. Run train.py first."
+            f"No evaluations found at {eval_path}. Run train_all_algos.py first."
         )
 
     data = np.load(eval_path)

@@ -15,13 +15,26 @@ import pandas as pd
 from env import THESSALONIKI_BBOX
 
 try:
-    from stable_baselines3 import PPO
-except ImportError:
+    from stable_baselines3 import A2C, DDPG, DQN, PPO, SAC, TD3
+    from sb3_contrib import TRPO
+except ImportError as e:
     raise ImportError(
-        "stable-baselines3 is required. Install with: pip install stable-baselines3"
-    )
+        "stable-baselines3 and sb3-contrib are required. Install with: pip install stable-baselines3 sb3-contrib"
+    ) from e
 
-DEFAULT_MODEL_PATH = Path(__file__).parent / "thesslink_policy.zip"
+# Map algo name (from path) to loader
+_MODEL_LOADERS = {
+    "dqn": DQN.load,
+    "ppo": PPO.load,
+    "a2c": A2C.load,
+    "trpo": TRPO.load,
+    "sac": SAC.load,
+    "td3": TD3.load,
+    "ddpg": DDPG.load,
+}
+CONTINUOUS_ALGOS = {"sac", "td3", "ddpg"}
+
+DEFAULT_MODEL_PATH = Path(__file__).parent / "policies" / "PPO" / "best_model.zip"
 DEFAULT_POIS_PATH = Path(__file__).parent / "thesslink_pois.csv"
 
 
@@ -83,14 +96,21 @@ def suggest_meeting_point(
 
     if not model_path.exists():
         raise FileNotFoundError(
-            f"Model not found at {model_path}. Train the agent first with: python train.py"
+            f"Model not found at {model_path}. Train with: python train_all_algos.py"
         )
     if not pois_path.exists():
         raise FileNotFoundError(
-            f"POI file not found at {pois_path}. Train the agent first with: python train.py"
+            f"POI file not found at {pois_path}. Train with: python train_all_algos.py"
         )
 
-    model = PPO.load(str(model_path))
+    # Infer algorithm from path (e.g. policies/DQN/best_model.zip → DQN)
+    path_lower = model_path.as_posix().lower()
+    loader = PPO.load  # default
+    for name, load_fn in _MODEL_LOADERS.items():
+        if name in path_lower:
+            loader = load_fn
+            break
+    model = loader(str(model_path))
     pois = pd.read_csv(pois_path)
 
     if len(pois) == 0:
@@ -102,7 +122,23 @@ def suggest_meeting_point(
     obs = np.array([na_lat, na_lon, nb_lat, nb_lon], dtype=np.float32).reshape(1, -1)
 
     action, _ = model.predict(obs, deterministic=True)
-    poi_idx = int(action[0])
+    path_lower = model_path.as_posix().lower()
+    is_continuous = any(a in path_lower for a in CONTINUOUS_ALGOS)
+
+    if is_continuous and action.shape and action.size >= 2:
+        # Action is (lat_norm, lon_norm); find nearest POI
+        lat_norm, lon_norm = float(action[0]), float(action[1])
+        lat_min, lat_max = THESSALONIKI_BBOX["south"], THESSALONIKI_BBOX["north"]
+        lon_min, lon_max = THESSALONIKI_BBOX["west"], THESSALONIKI_BBOX["east"]
+        target_lat = lat_min + np.clip(lat_norm, 0, 1) * (lat_max - lat_min)
+        target_lon = lon_min + np.clip(lon_norm, 0, 1) * (lon_max - lon_min)
+        from geopy.distance import geodesic
+        dists = pois.apply(
+            lambda r: geodesic((target_lat, target_lon), (r["lat"], r["lon"])).km, axis=1
+        )
+        poi_idx = int(dists.argmin())
+    else:
+        poi_idx = int(action[0])
 
     if poi_idx < 0 or poi_idx >= len(pois):
         poi_idx = min(max(0, poi_idx), len(pois) - 1)
@@ -133,23 +169,25 @@ def suggest_meeting_point(
 
 
 def main() -> int:
-    """CLI demo: suggest meeting point for two hardcoded locations."""
-    # Example locations in Thessaloniki
-    # User A: near Aristotle University
-    # User B: near White Tower
-    lat_a, lon_a = 40.6293, 22.9597
-    lat_b, lon_b = 40.6261, 22.9484
+    """CLI demo: suggest meeting point for two locations."""
+    import argparse
+    parser = argparse.ArgumentParser(description="Suggest meeting point using trained policy")
+    parser.add_argument("coords", nargs="*", type=float, help="lat_a lon_a lat_b lon_b")
+    parser.add_argument("--model-path", type=Path, default=DEFAULT_MODEL_PATH, help="Path to policy")
+    parser.add_argument("--pois-path", type=Path, default=DEFAULT_POIS_PATH, help="Path to POI CSV")
+    args = parser.parse_args()
 
-    if len(sys.argv) >= 5:
-        try:
-            lat_a, lon_a = float(sys.argv[1]), float(sys.argv[2])
-            lat_b, lon_b = float(sys.argv[3]), float(sys.argv[4])
-        except ValueError:
-            print("Usage: python inference.py [lat_a lon_a lat_b lon_b]")
-            return 1
+    if len(args.coords) >= 4:
+        lat_a, lon_a, lat_b, lon_b = args.coords[0], args.coords[1], args.coords[2], args.coords[3]
+    else:
+        lat_a, lon_a = 40.6293, 22.9597  # near Aristotle University
+        lat_b, lon_b = 40.6261, 22.9484  # near White Tower
 
     try:
-        result = suggest_meeting_point(lat_a, lon_a, lat_b, lon_b)
+        result = suggest_meeting_point(
+            lat_a, lon_a, lat_b, lon_b,
+            model_path=args.model_path, pois_path=args.pois_path,
+        )
         print("Suggested Meeting Point:")
         print(f"  Location: ({result.lat:.6f}, {result.lon:.6f})")
         print(f"  Type: {result.poi_type}")

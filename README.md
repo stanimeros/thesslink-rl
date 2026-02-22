@@ -24,38 +24,54 @@ pip install -r requirements.txt
 
 ```
 thesslink-rl/
-├── env.py         # Gymnasium environment logic (state, action, reward)
-├── train.py       # PPO training script
-├── inference.py   # Suggest meeting point using trained policy
-├── plot_result.py # Plot result on interactive Folium map
+├── env.py              # Gymnasium environment logic
+├── env_wrappers.py     # Continuous action wrapper (for SAC/TD3/DDPG)
+├── algorithms/         # Modular RL algorithm registry
+├── train_all_algos.py  # Train multiple algorithms
+├── plot_training.py    # Plot single-run training curves
+├── plot_all_algos.py   # Compare all trained algorithms
+├── inference.py        # Suggest meeting point using any trained policy
+├── plot_result.py      # Plot result on interactive Folium map
+├── policies/           # Per-algorithm policy folders (best_model.zip, etc.)
 ├── requirements.txt
 └── README.md
 ```
 
 ## Training
 
-Train the PPO agent on the ThessLink environment:
+Train multiple RL algorithms (DQN, PPO, A2C, TRPO, SAC, TD3, DDPG):
 
 ```bash
-python train.py
+python train_all_algos.py
 ```
+
+Each algorithm is saved under `policies/<algo>/`:
+
+- `best_model.zip` — Best checkpoint by eval reward
+- `<algo>_policy.zip` — Final policy at end of training
+- `evaluations.npz` — Evaluation history for plotting
 
 Options:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--timesteps` | 100000 | Total training timesteps |
+| `--algos` | all | Algorithms to train |
+| `--timesteps` | 100000 | Training timesteps per algo |
 | `--n-envs` | 4 | Parallel environments |
-| `--top-n` | 20 | Number of POIs in action space |
-| `--weight-distance` | 0.5 | Weight for distance minimization |
-| `--weight-privacy` | 0.5 | Weight for privacy maximization |
-| `--model-path` | thesslink_policy.zip | Output model path |
+| `--policies-dir` | policies/ | Output directory |
 | `--seed` | 42 | Random seed |
 
-Output:
+Plot comparison:
 
-- `thesslink_policy.zip` — Trained PPO policy
-- `thesslink_pois.csv` — POI list used during training (required for inference)
+```bash
+python plot_all_algos.py -o algorithm_comparison.png
+```
+
+Single-algo curves:
+
+```bash
+python plot_training.py --eval-path policies/PPO/evaluations.npz
+```
 
 ## Inference
 
@@ -79,7 +95,11 @@ Or via CLI:
 python inference.py
 # or with custom coordinates:
 python inference.py 40.6293 22.9597 40.6261 22.9484
+# use a specific algorithm's policy:
+python inference.py 40.6293 22.9597 40.6261 22.9484 --model-path policies/DQN/best_model.zip
 ```
+
+The inference script auto-detects the algorithm from the path (DQN, PPO, A2C, TRPO, SAC, TD3, DDPG).
 
 ## Map Visualization
 
