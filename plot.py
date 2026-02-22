@@ -19,11 +19,13 @@ DEFAULT_OUTPUT = Path(__file__).parent / "training_comparison.png"
 def load_evaluations(policies_dir: Path):
     """Load (algo_name, timesteps, mean_reward, std_reward) from each algo folder."""
     results = []
+    skipped = []
     for subdir in sorted(policies_dir.iterdir()):
         if not subdir.is_dir():
             continue
         eval_path = subdir / "evaluations.npz"
         if not eval_path.exists():
+            skipped.append(subdir.name)
             continue
         data = np.load(eval_path)
         timesteps = np.asarray(data["timesteps"])
@@ -31,7 +33,7 @@ def load_evaluations(policies_dir: Path):
         mean_reward = results_arr.mean(axis=1)
         std_reward = results_arr.std(axis=1)
         results.append((subdir.name, timesteps, mean_reward, std_reward))
-    return results
+    return results, skipped
 
 
 def plot_comparison(
@@ -45,10 +47,17 @@ def plot_comparison(
     if not policies_dir.exists():
         raise FileNotFoundError(f"Policies directory not found: {policies_dir}")
 
-    data = load_evaluations(policies_dir)
+    data, skipped = load_evaluations(policies_dir)
     if not data:
         raise FileNotFoundError(
             f"No evaluations.npz found in {policies_dir}. Run train.py first."
+        )
+    if skipped:
+        import sys
+        print(
+            f"Note: {len(skipped)} algorithm(s) skipped (no evaluations.npz): {', '.join(skipped)}. "
+            "Train longer or use --eval-freq 1000 so all algorithms get evaluations.",
+            file=sys.stderr,
         )
 
     colors = plt.cm.tab10(np.linspace(0, 1, len(data)))

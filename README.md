@@ -54,8 +54,7 @@ Options:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--algos` | all | Algorithms to train |
-| `--minutes` | 1 | Training time per algo (wall-clock minutes) |
-| `--timesteps` | — | Override: use fixed timesteps instead of time limit |
+| `--timesteps` | 100000 | Training timesteps per algorithm |
 | `--n-envs` | 4 | Parallel environments |
 | `--policies-dir` | policies/ | Output directory |
 | `--seed` | 42 | Random seed |
@@ -102,6 +101,7 @@ The predict script auto-detects the algorithm from the path (DQN, PPO, A2C, TRPO
 
 ## Edge Cases
 
+- **Some algorithms missing from plot**: The plot only includes algorithms with `evaluations.npz`. SAC, TD3, DDPG (continuous-action) need enough timesteps to reach the first eval (default 5k). Use `--eval-freq 1000` for shorter runs.
 - **No POIs found**: Training raises `ValueError` with a clear message. Ensure network connectivity and that OSMnx/Overpass can be reached.
 - **Empty POI geometries**: Filtered out during preprocessing.
 - **Invalid action index**: Clamped to valid range in predict.
