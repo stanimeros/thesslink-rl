@@ -12,7 +12,7 @@ ThessLink-RL uses Proximal Policy Optimization (PPO) to learn the best meeting p
 ## Requirements
 
 - Python 3.10+
-- Gymnasium, Stable-Baselines3, OSMnx, Pandas, Geopy
+- Gymnasium, Stable-Baselines3, OSMnx, Pandas, Geopy, Folium
 
 ## Setup
 
@@ -27,6 +27,7 @@ thesslink-rl/
 ├── env.py         # Gymnasium environment logic (state, action, reward)
 ├── train.py       # PPO training script
 ├── inference.py   # Suggest meeting point using trained policy
+├── plot_result.py # Plot result on interactive Folium map
 ├── requirements.txt
 └── README.md
 ```
@@ -79,6 +80,20 @@ python inference.py
 # or with custom coordinates:
 python inference.py 40.6293 22.9597 40.6261 22.9484
 ```
+
+## Map Visualization
+
+Plot User A, User B, and the suggested meeting point on an interactive Folium map:
+
+```bash
+python plot_result.py
+# or with custom coordinates:
+python plot_result.py 40.6293 22.9597 40.6261 22.9484
+# with custom output path:
+python plot_result.py 40.6293 22.9597 40.6261 22.9484 my_map.html
+```
+
+Opens `meeting_point_map.html` in a browser to view the map with markers and polylines.
 
 ## Environment Details
 
