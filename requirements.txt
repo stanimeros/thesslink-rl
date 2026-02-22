@@ -9,4 +9,3 @@ osmnx>=1.9.0
 pandas>=2.0.0
 geopy>=2.4.0
 numpy>=1.24.0
-folium>=0.15.0

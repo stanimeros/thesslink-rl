@@ -12,7 +12,7 @@ ThessLink-RL uses Proximal Policy Optimization (PPO) to learn the best meeting p
 ## Requirements
 
 - Python 3.10+
-- Gymnasium, Stable-Baselines3, OSMnx, Pandas, Geopy, Folium
+- Gymnasium, Stable-Baselines3, OSMnx, Pandas, Geopy
 
 ## Setup
 
@@ -31,7 +31,6 @@ thesslink-rl/
 ├── plot_training.py    # Plot single-run training curves
 ├── plot_all_algos.py   # Compare all trained algorithms
 ├── inference.py        # Suggest meeting point using any trained policy
-├── plot_result.py      # Plot result on interactive Folium map
 ├── policies/           # Per-algorithm policy folders (best_model.zip, etc.)
 ├── requirements.txt
 └── README.md
@@ -100,20 +99,6 @@ python inference.py 40.6293 22.9597 40.6261 22.9484 --model-path policies/DQN/be
 ```
 
 The inference script auto-detects the algorithm from the path (DQN, PPO, A2C, TRPO, SAC, TD3, DDPG).
-
-## Map Visualization
-
-Plot User A, User B, and the suggested meeting point on an interactive Folium map:
-
-```bash
-python plot_result.py
-# or with custom coordinates:
-python plot_result.py 40.6293 22.9597 40.6261 22.9484
-# with custom output path:
-python plot_result.py 40.6293 22.9597 40.6261 22.9484 my_map.html
-```
-
-Opens `meeting_point_map.html` in a browser to view the map with markers and polylines.
 
 ## Environment Details
 
