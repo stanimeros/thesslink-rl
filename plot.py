@@ -48,7 +48,7 @@ def plot_comparison(
     data = load_evaluations(policies_dir)
     if not data:
         raise FileNotFoundError(
-            f"No evaluations.npz found in {policies_dir}. Run train_all_algos.py first."
+            f"No evaluations.npz found in {policies_dir}. Run train.py first."
         )
 
     colors = plt.cm.tab10(np.linspace(0, 1, len(data)))

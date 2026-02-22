@@ -12,7 +12,7 @@ from typing import NamedTuple
 import numpy as np
 import pandas as pd
 
-from env import THESSALONIKI_BBOX
+from environment import THESSALONIKI_BBOX
 
 try:
     from stable_baselines3 import A2C, DDPG, DQN, PPO, SAC, TD3
@@ -96,11 +96,11 @@ def suggest_meeting_point(
 
     if not model_path.exists():
         raise FileNotFoundError(
-            f"Model not found at {model_path}. Train with: python train_all_algos.py"
+            f"Model not found at {model_path}. Train with: python train.py"
         )
     if not pois_path.exists():
         raise FileNotFoundError(
-            f"POI file not found at {pois_path}. Train with: python train_all_algos.py"
+            f"POI file not found at {pois_path}. Train with: python train.py"
         )
 
     # Infer algorithm from path (e.g. policies/DQN/best_model.zip → DQN)

@@ -24,13 +24,12 @@ pip install -r requirements.txt
 
 ```
 thesslink-rl/
-├── env.py              # Gymnasium environment logic
-├── env_wrappers.py     # Continuous action wrapper (for SAC/TD3/DDPG)
+├── environment.py      # Gymnasium environment logic
+├── action_wrappers.py  # Continuous action wrapper (for SAC/TD3/DDPG)
 ├── algorithms/         # Modular RL algorithm registry
-├── train_all_algos.py  # Train multiple algorithms
-├── plot_training.py    # Plot single-run training curves
-├── plot_all_algos.py   # Compare all trained algorithms
-├── inference.py        # Suggest meeting point using any trained policy
+├── train.py            # Train multiple algorithms
+├── plot.py             # Compare all trained algorithms
+├── predict.py          # Suggest meeting point using any trained policy
 ├── policies/           # Per-algorithm policy folders (best_model.zip, etc.)
 ├── requirements.txt
 └── README.md
@@ -41,7 +40,7 @@ thesslink-rl/
 Train multiple RL algorithms (DQN, PPO, A2C, TRPO, SAC, TD3, DDPG):
 
 ```bash
-python train_all_algos.py
+python train.py
 ```
 
 Each algorithm is saved under `policies/<algo>/`:
@@ -55,7 +54,8 @@ Options:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--algos` | all | Algorithms to train |
-| `--timesteps` | 100000 | Training timesteps per algo |
+| `--minutes` | 1 | Training time per algo (wall-clock minutes) |
+| `--timesteps` | — | Override: use fixed timesteps instead of time limit |
 | `--n-envs` | 4 | Parallel environments |
 | `--policies-dir` | policies/ | Output directory |
 | `--seed` | 42 | Random seed |
@@ -63,13 +63,7 @@ Options:
 Plot comparison:
 
 ```bash
-python plot_all_algos.py -o training_comparison.png
-```
-
-Single-algo curves:
-
-```bash
-python plot_training.py --eval-path policies/PPO/evaluations.npz
+python plot.py -o training_comparison.png
 ```
 
 ## Inference
@@ -77,7 +71,7 @@ python plot_training.py --eval-path policies/PPO/evaluations.npz
 Suggest a meeting point for two users:
 
 ```python
-from inference import suggest_meeting_point
+from predict import suggest_meeting_point
 
 result = suggest_meeting_point(
     lat_a=40.6293, lon_a=22.9597,  # User A (e.g. near Aristotle University)
@@ -91,14 +85,14 @@ print(f"Privacy: {result.privacy_score}, Total distance: {result.total_distance_
 Or via CLI:
 
 ```bash
-python inference.py
+python predict.py
 # or with custom coordinates:
-python inference.py 40.6293 22.9597 40.6261 22.9484
+python predict.py 40.6293 22.9597 40.6261 22.9484
 # use a specific algorithm's policy:
-python inference.py 40.6293 22.9597 40.6261 22.9484 --model-path policies/DQN/best_model.zip
+python predict.py 40.6293 22.9597 40.6261 22.9484 --model-path policies/DQN/best_model.zip
 ```
 
-The inference script auto-detects the algorithm from the path (DQN, PPO, A2C, TRPO, SAC, TD3, DDPG).
+The predict script auto-detects the algorithm from the path (DQN, PPO, A2C, TRPO, SAC, TD3, DDPG).
 
 ## Environment Details
 
@@ -110,8 +104,4 @@ The inference script auto-detects the algorithm from the path (DQN, PPO, A2C, TR
 
 - **No POIs found**: Training raises `ValueError` with a clear message. Ensure network connectivity and that OSMnx/Overpass can be reached.
 - **Empty POI geometries**: Filtered out during preprocessing.
-- **Invalid action index**: Clamped to valid range in inference.
-
-## License
-
-Research project — Near4all.
+- **Invalid action index**: Clamped to valid range in predict.
