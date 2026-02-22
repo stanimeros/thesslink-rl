@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 DEFAULT_POLICIES_DIR = Path(__file__).parent / "policies"
-DEFAULT_OUTPUT = Path(__file__).parent / "algorithm_comparison.png"
+DEFAULT_OUTPUT = Path(__file__).parent / "training_comparison.png"
 
 
 def load_evaluations(policies_dir: Path):

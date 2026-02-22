@@ -63,7 +63,7 @@ Options:
 Plot comparison:
 
 ```bash
-python plot_all_algos.py -o algorithm_comparison.png
+python plot_all_algos.py -o training_comparison.png
 ```
 
 Single-algo curves:
