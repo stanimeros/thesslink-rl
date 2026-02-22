@@ -6,6 +6,7 @@ Gymnasium environment for RL-based Meeting Point (POI) suggestion in Thessalonik
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import gymnasium as gym
@@ -17,17 +18,22 @@ try:
 except ImportError:
     raise ImportError("osmnx is required. Install with: pip install osmnx")
 
+# Use project-local OSM cache to avoid repeated Overpass API calls (OSMnx 2.x)
+_OSM_CACHE_DIR = Path(__file__).resolve().parent / "cache"
+ox.settings.use_cache = True
+ox.settings.cache_folder = str(_OSM_CACHE_DIR)
+
 try:
     from geopy.distance import geodesic
 except ImportError:
     raise ImportError("geopy is required. Install with: pip install geopy")
 
-# Thessaloniki bounding box (approximate city limits)
+# Thessaloniki bounding box (~6km × 6km city center, stays under Overpass query limits)
 THESSALONIKI_BBOX = {
-    "north": 40.68,
-    "south": 40.52,
-    "east": 23.05,
-    "west": 22.85,
+    "north": 40.655,
+    "south": 40.598,
+    "east": 22.985,
+    "west": 22.910,
 }
 
 # Privacy scores by POI type (higher = more private)
@@ -66,7 +72,7 @@ def _get_poi_coords(geometry) -> tuple[float, float]:
 
 
 def fetch_thessaloniki_pois(
-    top_n: int = 20,
+    top_n: int = 50,
     place_name: str = "Thessaloniki, Greece",
     use_bbox_fallback: bool = True,
 ) -> pd.DataFrame:
@@ -85,32 +91,25 @@ def fetch_thessaloniki_pois(
         ValueError: If no POIs are found after all attempts.
     """
     all_pois = []
+    center = (40.6264, 22.9484)  # Thessaloniki center (White Tower area)
+    dist_m = 2500  # 2.5 km radius → ~5 km box, avoids Overpass subdivision
 
-    def _fetch_by_tags(tags: dict) -> pd.DataFrame:
+    def _fetch(tags: dict, label: str) -> pd.DataFrame:
         try:
-            return ox.features_from_place(place_name, tags=tags)
+            logger.info("Fetching %s from OSM (~%d m radius)...", label, dist_m)
+            return ox.features_from_point(center, tags=tags, dist=dist_m)
         except Exception as e:
-            logger.warning("Place-based fetch failed (%s): %s", tags, e)
+            logger.warning("Point fetch failed: %s. Trying place...", e)
             if use_bbox_fallback:
-                return ox.features_from_bbox(
-                    THESSALONIKI_BBOX["north"],
-                    THESSALONIKI_BBOX["south"],
-                    THESSALONIKI_BBOX["east"],
-                    THESSALONIKI_BBOX["west"],
-                    tags=tags,
-                )
+                return ox.features_from_place(place_name, tags=tags)
             raise
 
-    # Fetch amenities (cafe, restaurant) and parks (leisure)
     try:
-        gdf_amenity = _fetch_by_tags({"amenity": ["cafe", "restaurant"]})
-        all_pois.append(gdf_amenity)
+        all_pois.append(_fetch({"amenity": ["cafe", "restaurant"]}, "cafes & restaurants"))
     except Exception as e:
         logger.warning("Could not fetch amenities: %s", e)
-
     try:
-        gdf_park = _fetch_by_tags({"leisure": "park"})
-        all_pois.append(gdf_park)
+        all_pois.append(_fetch({"leisure": "park"}, "parks"))
     except Exception as e:
         logger.warning("Could not fetch parks: %s", e)
 
@@ -161,7 +160,7 @@ class ThessLinkEnv(gym.Env):
     def __init__(
         self,
         pois: pd.DataFrame | None = None,
-        top_n: int = 20,
+        top_n: int = 50,
         weight_distance: float = 0.5,
         weight_privacy: float = 0.5,
         distance_scale_km: float = 10.0,

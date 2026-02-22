@@ -52,7 +52,7 @@ def train(
     *,
     total_timesteps: int = 100_000,
     n_envs: int = 4,
-    top_n_pois: int = 20,
+    top_n_pois: int = 50,
     weight_distance: float = 0.5,
     weight_privacy: float = 0.5,
     model_path: Path | str = DEFAULT_MODEL_PATH,
@@ -67,16 +67,23 @@ def train(
     Returns:
         Path to the saved model file.
     """
-    logger.info("Fetching POIs from OpenStreetMap (Thessaloniki)...")
-    try:
-        pois = fetch_thessaloniki_pois(top_n=top_n_pois)
-    except ValueError as e:
-        logger.error("Failed to fetch POIs: %s", e)
-        raise
+    pois_path = Path(pois_path)
+    if pois_path.exists():
+        logger.info("Loading POIs from %s (skip OSM fetch)", pois_path)
+        pois = pd.read_csv(pois_path)
+        if len(pois) < top_n_pois:
+            pois = fetch_thessaloniki_pois(top_n=top_n_pois)
+            pois.to_csv(pois_path, index=False)
+    else:
+        logger.info("Fetching POIs from OpenStreetMap (Thessaloniki)...")
+        try:
+            pois = fetch_thessaloniki_pois(top_n=top_n_pois)
+        except ValueError as e:
+            logger.error("Failed to fetch POIs: %s", e)
+            raise
+        pois.to_csv(pois_path, index=False)
 
     logger.info("Found %d POIs. Types: %s", len(pois), pois["poi_type"].value_counts().to_dict())
-    pois.to_csv(pois_path, index=False)
-    logger.info("Saved POI list to %s", pois_path)
 
     env = ThessLinkEnv(
         pois=pois,
@@ -141,8 +148,8 @@ def main() -> int:
     parser.add_argument(
         "--top-n",
         type=int,
-        default=20,
-        help="Number of POIs in action space (default: 20)",
+        default=50,
+        help="Number of POIs in action space (default: 50)",
     )
     parser.add_argument(
         "--weight-distance",
