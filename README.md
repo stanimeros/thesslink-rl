@@ -2,6 +2,8 @@
 
 Cost/reward function for meeting point suggestion. The agent suggests the best POI (Point of Interest) from 3 options based on **agent distance**, **human distance**, **energy**, and **privacy**. Weights are learned via gradient descent.
 
+![lb-foraging environment](lb-foraging/docs/img/lbf.gif)
+
 ## Overview
 
 - **Inputs:** Human position, agent position, 3 POI suggestions
@@ -31,6 +33,8 @@ python cost_function.py --no-plot          # Skip generating cost_training_plot.
 ```
 
 Produces `thesslink_weights.json` and `cost_training_plot.png`.
+
+![Cost training plot](cost_training_plot.png)
 
 ### 2. Run demo (`run_thesslink_demo.py`)
 
