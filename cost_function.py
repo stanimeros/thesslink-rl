@@ -24,25 +24,25 @@ def cost_components(
 ) -> Tuple[float, float, float, float, float]:
     """
     Raw cost components for one POI.
-    Returns (d_agent, d_human, energy_human, privacy, steps).
-    cost = w_da*d_agent + w_dh*d_human + w_e*energy + w_p*privacy + w_s*steps
+    Returns (travel_effort_agent, travel_effort_human, energy_human, privacy, time_to_meet).
+    cost = w_te_a*travel_effort_agent + w_te_h*travel_effort_human + w_e*energy + w_p*privacy + w_ttm*time_to_meet
     """
     max_dist = grid_size[0] + grid_size[1]
 
-    # 1. Both distances (Manhattan)
-    d_agent = manhattan_distance(agent_pos, poi) / max_dist
-    d_human = manhattan_distance(human_pos, poi) / max_dist
+    # 1. Travel Effort: Manhattan distances (agent→POI, human→POI), normalized
+    travel_effort_agent = manhattan_distance(agent_pos, poi) / max_dist
+    travel_effort_human = manhattan_distance(human_pos, poi) / max_dist
 
     # 2. Human energy: always in [0.2, 0.8] - humans want min energy but not 0
-    energy_human = 0.2 + 0.6 * d_human
+    energy_human = 0.2 + 0.6 * travel_effort_human
 
     # 3. Privacy (basic): higher when human far from POI
-    privacy = 1.0 - d_human
+    privacy = 1.0 - travel_effort_human
 
-    # 4. Steps: min steps for both to arrive = max(d_agent, d_human) in Manhattan
-    steps = max(d_agent, d_human)
+    # 4. Time-to-Meet: min steps for both to arrive = max(travel_effort_agent, travel_effort_human)
+    time_to_meet = max(travel_effort_agent, travel_effort_human)
 
-    return d_agent, d_human, energy_human, privacy, steps
+    return travel_effort_agent, travel_effort_human, energy_human, privacy, time_to_meet
 
 
 def cost_function(
@@ -50,15 +50,15 @@ def cost_function(
     agent_pos: Tuple[int, int],
     human_pos: Tuple[int, int],
     grid_size: Tuple[int, int] = (64, 64),
-    w_d_agent: float = 0.20,
-    w_d_human: float = 0.20,
+    w_travel_effort_agent: float = 0.20,
+    w_travel_effort_human: float = 0.20,
     w_energy: float = 0.20,
     w_privacy: float = 0.20,
-    w_steps: float = 0.20,
+    w_time_to_meet: float = 0.20,
 ) -> float:
-    """Compute cost for one POI. Lower = better. Includes d_agent, d_human, energy, privacy, steps."""
+    """Compute cost for one POI. Lower = better. Includes Travel Effort (agent, human), energy, privacy, Time-to-Meet."""
     comps = cost_components(poi, agent_pos, human_pos, grid_size)
-    return sum(w * c for w, c in zip((w_d_agent, w_d_human, w_energy, w_privacy, w_steps), comps))
+    return sum(w * c for w, c in zip((w_travel_effort_agent, w_travel_effort_human, w_energy, w_privacy, w_time_to_meet), comps))
 
 
 def suggest_poi(

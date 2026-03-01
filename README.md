@@ -1,13 +1,13 @@
 # ThessLink RL
 
-**Reinforcement Learning** for meeting point suggestion. The model takes **initial distance** (agent, human), **steps** to POIs, **energy** (20–80% for human), and **privacy** (basic), calculates a cost for each POI, and selects the **minimum cost**.
+**Reinforcement Learning** for meeting point suggestion. The model takes **Travel Effort** (agent, human distances), **Time-to-Meet**, **energy** (20–80% for human), and **privacy** (basic), calculates a cost for each POI, and selects the **minimum cost**.
 
 ![lb-foraging environment](lb-foraging/docs/img/lbf.gif)
 
 ## Overview
 
-- **Inputs:** Human position, agent position, 3 POI suggestions
-- **Cost components per POI:** d_agent, d_human (Manhattan distances), energy (20–80%), privacy
+- **Inputs:** Human position, agent position, 3 POI suggestions (64×64 grid)
+- **Cost components per POI:** Travel Effort (agent, human), energy (20–80%), privacy, Time-to-Meet
 - **Output:** POI with minimum cost
 - **Reward:** `-cost` (RL learns to minimize cost)
 - **Baseline:** `suggest_poi` (cost formula) used for RL evaluation
@@ -66,19 +66,19 @@ thesslink-rl/
 ## Cost formula
 
 ```
-cost = w_d_agent×d_agent + w_d_human×d_human + w_energy×energy + w_privacy×privacy + w_steps×steps
+cost = w_TE_a×travel_effort_agent + w_TE_h×travel_effort_human + w_energy×energy + w_privacy×privacy + w_TTM×time_to_meet
 ```
 
-- **d_agent, d_human:** Manhattan distances (agent→POI, human→POI), normalized
-- **energy:** 0.2 + 0.6×d_human (range 20–80%)
-- **privacy:** 1 − d_human (basic)
-- **steps:** max(d_agent, d_human) — min steps for both to arrive
+- **Travel Effort (agent, human):** Manhattan distances (agent→POI, human→POI), normalized
+- **energy:** 0.2 + 0.6×travel_effort_human (range 20–80%)
+- **privacy:** 1 − travel_effort_human (basic)
+- **Time-to-Meet:** max(travel_effort_agent, travel_effort_human) — min steps for both to arrive
 
 Lower cost = better suggestion. Default weights: 0.20 each.
 
 ## Reinforcement Learning
 
-- **State:** Normalized positions + cost components (d_agent, d_human, energy, privacy) per POI
+- **State:** Normalized positions + cost components (Travel Effort, energy, privacy, Time-to-Meet) per POI
 - **Action:** Discrete(3) – which POI to suggest
 - **Reward:** `-cost` (default) – minimize cost
 

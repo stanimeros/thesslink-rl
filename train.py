@@ -45,7 +45,7 @@ class PlottingCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         if self.num_timesteps > 0 and self.num_timesteps % self.eval_freq == 0:
-            eval_env = PoISuggestionEnv(grid_size=(8, 8))
+            eval_env = PoISuggestionEnv(grid_size=(64, 64))
             # Eval mean reward
             rewards = []
             for _ in range(self.n_eval_episodes):
@@ -68,7 +68,7 @@ class PlottingCallback(BaseCallback):
                 human_pos = eval_env._human_pos
                 agent_pos = eval_env._agent_pos
                 pois = eval_env._pois
-                baseline_action = suggest_poi(pois, agent_pos, human_pos, grid_size=(8, 8))
+                baseline_action = suggest_poi(pois, agent_pos, human_pos, grid_size=(64, 64))
                 agreements += 1 if rl_action == baseline_action else 0
             self.agreement_history.append(agreements / self.n_eval_episodes)
         return True
@@ -108,7 +108,7 @@ def suggest_poi_rl(
     pois: list[tuple[int, int]],
     agent_pos: tuple[int, int],
     human_pos: tuple[int, int],
-    grid_size: tuple[int, int] = (8, 8),
+    grid_size: tuple[int, int] = (64, 64),
     model_path: Path | str | None = None,
 ) -> int:
     """
@@ -145,7 +145,7 @@ def register_env():
     gym.register(
         id="PoISuggestion-v0",
         entry_point="poi_environment:PoISuggestionEnv",
-        kwargs={"grid_size": (8, 8)},
+        kwargs={"grid_size": (64, 64)},
     )
 
 
@@ -206,7 +206,7 @@ def train(
 def evaluate_vs_baseline(
     model: PPO,
     n_episodes: int = 500,
-    grid_size: tuple[int, int] = (8, 8),
+    grid_size: tuple[int, int] = (64, 64),
 ) -> dict:
     """Compare RL policy vs cost-based suggest_poi. Returns agreement rate."""
     env = PoISuggestionEnv(grid_size=grid_size, seed=42)

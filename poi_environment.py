@@ -2,9 +2,9 @@
 Gymnasium environment for POI suggestion. Used for Reinforcement Learning training.
 
 State: (human_pos, agent_pos, poi1, poi2, poi3) normalized to [0,1], plus cost components
-       for each POI (d_agent, d_human, energy, privacy, steps) = 10 + 15 = 25 floats
+       for each POI (travel_effort_agent, travel_effort_human, energy, privacy, time_to_meet) = 10 + 15 = 25 floats
 Action: Discrete(3) - which POI to suggest (0, 1, 2)
-Reward: -cost (cost includes d_agent, d_human, energy, privacy, steps)
+Reward: -cost (cost includes Travel Effort, energy, privacy, Time-to-Meet)
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def build_observation(
     human_pos: tuple[int, int],
     agent_pos: tuple[int, int],
     pois: list[tuple[int, int]],
-    grid_size: tuple[int, int] = (8, 8),
+    grid_size: tuple[int, int] = (64, 64),
 ) -> np.ndarray:
     """Build observation vector for RL policy. Same format as PoISuggestionEnv._get_obs."""
     rows, cols = grid_size
@@ -45,14 +45,14 @@ class PoISuggestionEnv(gym.Env):
     RL environment for learning which POI to suggest.
 
     Each episode: sample random (human_pos, agent_pos, 3 POIs).
-    Agent chooses one POI. Reward = -cost (cost includes d_agent, d_human, energy, privacy, steps).
+    Agent chooses one POI. Reward = -cost (cost includes Travel Effort, energy, privacy, Time-to-Meet).
     """
 
     metadata = {"render_modes": []}
 
     def __init__(
         self,
-        grid_size: tuple[int, int] = (8, 8),
+        grid_size: tuple[int, int] = (64, 64),
         weights: tuple[float, ...] | None = None,
         seed: int | None = None,
     ):
@@ -92,7 +92,7 @@ class PoISuggestionEnv(gym.Env):
             _normalize_pos(self._pois[1], self.rows, self.cols),
             _normalize_pos(self._pois[2], self.rows, self.cols),
         ]
-        # Add cost components for each POI (d_agent, d_human, energy, privacy, steps) - already in [0,1]
+        # Add cost components for each POI (travel_effort_agent, travel_effort_human, energy, privacy, time_to_meet) - already in [0,1]
         for poi in self._pois:
             comps = cost_components(poi, self._agent_pos, self._human_pos, self.grid_size)
             parts.append(np.array(comps, dtype=np.float32))

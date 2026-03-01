@@ -171,7 +171,7 @@ def run_with_movement(
 ):
     """Run multiple scenarios. After each episode completes, start next."""
     env = gym.make(
-        "Foraging-8x8-2p-3f-v3",
+        "Foraging-64x64-2p-3f-v3",
         render_mode="human",
         allow_agent_on_food=True,
         allow_agent_on_agent=True,
@@ -182,8 +182,8 @@ def run_with_movement(
     lbf._init_render()
     viewer = lbf.viewer
     assert isinstance(viewer, Viewer)
-    # Larger cells for better visibility
-    viewer.grid_size = 56
+    # Cell size for 64x64 grid (smaller than 8x8 to fit window)
+    viewer.grid_size = 9
     viewer.width = 1 + viewer.cols * (viewer.grid_size + 1)
     viewer.height = 1 + viewer.rows * (viewer.grid_size + 1)
     viewer.window.set_size(viewer.width, viewer.height)
@@ -201,16 +201,16 @@ def run_with_movement(
         suggested_poi = pois[suggested_idx]
 
         weights = DEFAULT_WEIGHTS
-        grid_size = (8, 8)
+        grid_size = (64, 64)
         lines = []
         for i, poi in enumerate(pois):
             cost = cost_function(poi, agent_pos, human_pos, grid_size, *weights)
-            d_a, d_h, e, p, steps = cost_components(poi, agent_pos, human_pos, grid_size)
+            te_a, te_h, e, p, ttm = cost_components(poi, agent_pos, human_pos, grid_size)
             marker = " *" if poi == suggested_poi else ""
-            lines.append(f"  P{i+1} {poi}: cost={cost:.3f} (d_a={d_a:.2f} d_h={d_h:.2f} e={e:.2f} p={p:.2f} steps={steps:.2f}){marker}")
+            lines.append(f"  P{i+1} {poi}: cost={cost:.3f} (Travel Effort A={te_a:.2f} H={te_h:.2f} energy={e:.2f} privacy={p:.2f} Time-to-Meet={ttm:.2f}){marker}")
         print(f"\n--- Scenario {scenario} ---")
         print(f"H: {human_pos}  A: {agent_pos}  POIs: {pois}")
-        print("Per POI: cost (d_agent, d_human, energy, privacy, steps) - lower=better:")
+        print("Per POI: cost (Travel Effort A/H, energy, privacy, Time-to-Meet) - lower=better:")
         print("\n".join(lines))
         print(f"Suggested: P{suggested_idx+1} {suggested_poi}")
 
@@ -228,7 +228,7 @@ def run_with_movement(
 
 
 def main():
-    grid_size = (8, 8)
+    grid_size = (64, 64)
     rng = random.Random(42)
     n_scenarios = args.scenarios
 
