@@ -89,20 +89,22 @@ def run_episode(
     lbf.players[1].level = 2
     lbf._gen_valid_moves()
 
-    # Build labels with cost and color (optimal=green, less=blue, worst=red)
+    # Build labels with cost and color by scale (tertiles: optimal / medium / worst)
     weights = DEFAULT_WEIGHTS
     costs_with_poi = [(cost_function(p, agent_pos, human_pos, grid_size, *weights), p) for p in pois]
     costs_with_poi.sort(key=lambda x: x[0])
+    costs_arr = np.array([c for c, _ in costs_with_poi])
+    p33 = np.percentile(costs_arr, 33)
+    p67 = np.percentile(costs_arr, 67)
     poi_to_label_and_color: dict[tuple[int, int], tuple[str, tuple[int, int, int, int]]] = {}
-    for i, (cost, poi) in enumerate(costs_with_poi):
-        rank = i  # 0=best, n-1=worst
+    for cost, poi in costs_with_poi:
         label = f"P{pois.index(poi)+1} {cost:.2f}"
-        if rank == 0:
+        if cost <= p33:
             color = COLOR_OPTIMAL
-        elif rank == len(pois) - 1:
-            color = COLOR_WORST
-        else:
+        elif cost <= p67:
             color = COLOR_LESS
+        else:
+            color = COLOR_WORST
         poi_to_label_and_color[poi] = (label, color)
 
     def draw_badge_h_a(row: int, col: int, level: int):
