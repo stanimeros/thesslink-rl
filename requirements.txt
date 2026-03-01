@@ -1,0 +1,15 @@
+# Core RL environment (lb-foraging) - install with: pip install -e lb-foraging/
+# lbforaging
+
+# Dependencies
+numpy>=1.20
+gymnasium>=0.29
+pyglet<2
+six
+
+# For pathfinding (A*)
+# networkx  # optional, for graph-based A*
+
+# For RL training (add when ready)
+# torch
+# stable-baselines3
