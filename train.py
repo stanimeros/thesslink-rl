@@ -17,12 +17,12 @@ import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 
-from cost_function import suggest_poi_by_steps
-from poi_env import PoISuggestionEnv
+from cost_function import suggest_poi, suggest_poi_by_steps
+from environment import PoISuggestionEnv
 
 MODEL_DIR = Path(__file__).parent / "models"
 MODEL_PATH = MODEL_DIR / "ppo_poi_suggestion"
-PLOT_FILE = Path(__file__).parent / "rl_training_plot.png"
+PLOT_FILE = Path(__file__).parent / "training_plot.png"
 _best_model_path = MODEL_DIR / "best_model"
 
 
@@ -63,7 +63,7 @@ class PlottingCallback(BaseCallback):
             self.reward_history.append(mean_reward)
             self.step_history.append(self.num_timesteps)
 
-            # Agreement with suggest_poi_by_steps baseline
+            # Agreement with cost baseline (suggest_poi) when reward=cost, else suggest_poi_by_steps
             agreements = 0
             for _ in range(self.n_eval_episodes):
                 obs, _ = eval_env.reset()
@@ -71,7 +71,10 @@ class PlottingCallback(BaseCallback):
                 human_pos = eval_env._human_pos
                 agent_pos = eval_env._agent_pos
                 pois = eval_env._pois
-                baseline_action = suggest_poi_by_steps(pois, agent_pos, human_pos)
+                if self.reward_type == "cost":
+                    baseline_action = suggest_poi(pois, agent_pos, human_pos, grid_size=(8, 8))
+                else:
+                    baseline_action = suggest_poi_by_steps(pois, agent_pos, human_pos)
                 agreements += 1 if rl_action == baseline_action else 0
             self.agreement_history.append(agreements / self.n_eval_episodes)
         return True
@@ -116,8 +119,10 @@ def suggest_poi_rl(
 ) -> int:
     """
     Use trained RL policy to suggest POI. Returns index 0, 1, or 2.
-    Falls back to cost-based suggest_poi if model not found.
+    Exits with message if model not found.
     """
+    import sys
+
     if model_path is not None:
         path = Path(model_path)
         if not path.suffix:
@@ -129,9 +134,10 @@ def suggest_poi_rl(
                 path = p
                 break
         else:
-            return suggest_poi_by_steps(pois, agent_pos, human_pos)
+            print("Model not found. Run train.py first to train the RL policy.")
+            sys.exit(1)
 
-    from poi_env import build_observation
+    from environment import build_observation
 
     model = PPO.load(str(path))
     obs = build_observation(human_pos, agent_pos, pois, grid_size)
@@ -152,7 +158,7 @@ def register_env(reward_type: str = "cost"):
         gym.envs.registry.pop("PoISuggestion-v0", None)
     gym.register(
         id="PoISuggestion-v0",
-        entry_point="poi_env:PoISuggestionEnv",
+        entry_point="environment:PoISuggestionEnv",
         kwargs={"grid_size": (8, 8), "reward_type": reward_type},
     )
 
@@ -217,9 +223,9 @@ def evaluate_vs_baseline(
     model: PPO,
     n_episodes: int = 500,
     grid_size: tuple[int, int] = (8, 8),
-    reward_type: str = "steps",
+    reward_type: str = "cost",
 ) -> dict:
-    """Compare RL policy vs suggest_poi_by_steps. Returns agreement rate."""
+    """Compare RL policy vs cost-based suggest_poi or suggest_poi_by_steps. Returns agreement rate."""
     env = PoISuggestionEnv(grid_size=grid_size, reward_type=reward_type, seed=42)
     agreements = 0
     total = 0
@@ -232,7 +238,10 @@ def evaluate_vs_baseline(
         human_pos = env._human_pos
         agent_pos = env._agent_pos
         pois = env._pois
-        baseline_action = suggest_poi_by_steps(pois, agent_pos, human_pos)
+        if reward_type == "cost":
+            baseline_action = suggest_poi(pois, agent_pos, human_pos, grid_size=grid_size)
+        else:
+            baseline_action = suggest_poi_by_steps(pois, agent_pos, human_pos)
 
         if rl_action == baseline_action:
             agreements += 1
@@ -244,10 +253,10 @@ def evaluate_vs_baseline(
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--steps", type=int, default=50_000, help="Training timesteps")
-    parser.add_argument("--reward", choices=["cost", "steps"], default="steps")
+    parser.add_argument("--reward", choices=["cost", "steps"], default="cost")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no-train", action="store_true", help="Skip training, evaluate only")
-    parser.add_argument("--no-plot", action="store_true", help="Skip generating rl_training_plot.png")
+    parser.add_argument("--no-plot", action="store_true", help="Skip generating training_plot.png")
     parser.add_argument("--eval-episodes", type=int, default=500)
     args = parser.parse_args()
 
@@ -257,7 +266,7 @@ def main():
             print(f"Model not found at {model_path}.zip. Run without --no-train first.")
             return
         model = PPO.load(str(model_path))
-        print("Evaluating RL policy vs suggest_poi_by_steps...")
+        print("Evaluating RL policy vs cost baseline...")
         stats = evaluate_vs_baseline(model, n_episodes=args.eval_episodes, reward_type=args.reward)
         print(f"Agreement: {stats['agreement']:.1%} ({stats['agreements']}/{stats['total']})")
         return
@@ -270,9 +279,9 @@ def main():
         seed=args.seed,
         plot_path=None if args.no_plot else PLOT_FILE,
     )
-    print("\nEvaluating vs suggest_poi_by_steps baseline...")
+    print("\nEvaluating vs cost baseline...")
     stats = evaluate_vs_baseline(model, n_episodes=args.eval_episodes, reward_type=args.reward)
-    print(f"Agreement with suggest_poi_by_steps: {stats['agreement']:.1%}")
+    print(f"Agreement with cost-based suggest_poi: {stats['agreement']:.1%}")
 
 
 if __name__ == "__main__":

@@ -1,16 +1,17 @@
 # ThessLink RL
 
-**Reinforcement Learning** for meeting point suggestion. The agent suggests the best POI (Point of Interest) from 3 options to **minimize steps** for both human and agent to arrive. Direct paths, no circles.
+**Reinforcement Learning** for meeting point suggestion. The model takes **initial distance** (agent, human), **steps** to POIs, **energy** (20–80% for human), and **privacy** (basic), calculates a cost for each POI, and selects the **minimum cost**.
 
 ![lb-foraging environment](lb-foraging/docs/img/lbf.gif)
 
 ## Overview
 
 - **Inputs:** Human position, agent position, 3 POI suggestions
-- **Output:** Agent suggests the meeting point that minimizes steps for both to arrive
-- **Reward:** `-steps/max_dist` where steps = max(d_agent, d_human) — Manhattan distance, direct path
-- **No gradient descent:** RL (PPO) learns the policy; fallback is `suggest_poi_by_steps` (argmin steps)
-- **Visualization:** lb-foraging grid with H, A, P1, P2, P3 labels showing steps per POI
+- **Cost components per POI:** d_agent, d_human (Manhattan distances), energy (20–80%), privacy
+- **Output:** POI with minimum cost
+- **Reward:** `-cost` (RL learns to minimize cost)
+- **Fallback:** `suggest_poi` (cost formula with default weights) when no RL model
+- **Demo:** Shows steps + cost per POI
 
 ## Setup
 
@@ -23,61 +24,68 @@ pip install -r requirements.txt
 
 ## Usage
 
-### 1. Train RL policy (`train_rl.py`)
+### 1. Train RL policy (`train.py`)
 
 ```bash
-python train_rl.py                    # Train PPO 50k steps (steps reward), save to models/
-python train_rl.py --steps 100000     # More training
-python train_rl.py --reward cost       # Use cost-based reward (legacy)
-python train_rl.py --no-plot          # Skip generating rl_training_plot.png
-python train_rl.py --no-train         # Evaluate loaded model vs suggest_poi_by_steps
+python train.py                    # Train PPO 50k steps (cost reward), save to models/
+python train.py --steps 100000     # More training
+python train.py --reward steps     # Use steps-based reward instead of cost
+python train.py --no-plot          # Skip generating training_plot.png
+python train.py --no-train         # Evaluate loaded model vs cost baseline
 ```
 
-Produces `models/best_model.zip`, `models/ppo_poi_suggestion.zip`, and `rl_training_plot.png`.
+Produces `models/best_model.zip`, `models/ppo_poi_suggestion.zip`, and `training_plot.png`.
 
-### 2. Run demo (`run_thesslink_demo.py`)
+![Training plot](training_plot.png)
 
-Uses RL policy (or `suggest_poi_by_steps` if no model). POIs show **steps** to arrive.
+### 2. Run demo (`demo.py`)
+
+Uses RL policy (or cost-based `suggest_poi` if no model). Shows **steps** and **cost** per POI.
 
 ```bash
-python run_thesslink_demo.py               # 5 scenarios, RL/steps (minimize steps)
-python run_thesslink_demo.py --scenarios 10
-python run_thesslink_demo.py --scenarios 0    # Infinite (until window closed)
-python run_thesslink_demo.py --no-visualize
+python demo.py               # 5 scenarios
+python demo.py --scenarios 10
+python demo.py --scenarios 0    # Infinite (until window closed)
+python demo.py --no-visualize
 ```
 
 ## Project structure
 
 ```
 thesslink-rl/
-├── cost_function.py         # suggest_poi_by_steps, steps_to_both_arrive, cost helpers
-├── poi_env.py                # Gymnasium env for POI suggestion (RL)
-├── train_rl.py               # PPO training, suggest_poi_rl()
-├── models/                   # RL models (best_model.zip, ppo_poi_suggestion.zip)
-├── rl_training_plot.png      # RL training plot
-├── run_thesslink_demo.py     # Demo (default: RL/steps)
-├── lb-foraging/              # lb-foraging env (visualization)
+├── cost_function.py    # cost_components, cost_function, suggest_poi, steps_to_both_arrive
+├── environment.py      # Gymnasium env for POI suggestion (RL)
+├── train.py            # PPO training, suggest_poi_rl()
+├── demo.py             # Demo with steps + cost display
+├── models/              # RL models (best_model.zip, ppo_poi_suggestion.zip)
+├── training_plot.png   # RL training plot
+├── lb-foraging/        # lb-foraging env (visualization)
 ├── requirements.txt
 └── README.md
 ```
 
-## Steps-based selection
+## Cost formula
 
-- **steps_to_both_arrive(poi)** = max(Manhattan(agent, poi), Manhattan(human, poi))
-- Both move **directly** toward the chosen POI (no circles)
-- **suggest_poi_by_steps** picks argmin steps (fallback when no RL model)
-- RL policy learns the same objective via PPO
+```
+cost = w_d_agent×d_agent + w_d_human×d_human + w_energy×energy + w_privacy×privacy
+```
+
+- **d_agent, d_human:** Manhattan distances (agent→POI, human→POI), normalized
+- **energy:** 0.2 + 0.6×d_human (range 20–80%)
+- **privacy:** 1 − d_human (basic)
+
+Lower cost = better suggestion. Default weights: 0.25 each.
 
 ## Reinforcement Learning
 
-- **State:** Normalized positions + cost components per POI
+- **State:** Normalized positions + cost components (d_agent, d_human, energy, privacy) per POI
 - **Action:** Discrete(3) – which POI to suggest
-- **Reward:** `-steps/max_dist` (default) — minimizes time for both to arrive
+- **Reward:** `-cost` (default) – minimize cost
 
 ## Flow
 
-1. **train_rl.py** – Train RL policy (PPO, steps reward) → `models/best_model.zip`
-2. **run_thesslink_demo.py** – Load RL model (or use suggest_poi_by_steps) → suggest POI → visualize
+1. **train.py** – Train RL policy (PPO, cost reward) → `models/best_model.zip`
+2. **demo.py** – Load RL model (or use suggest_poi) → suggest POI → visualize
 
 ## License
 

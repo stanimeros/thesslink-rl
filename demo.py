@@ -17,7 +17,7 @@ import lbforaging  # pyright: ignore[reportMissingImports]
 import numpy as np
 import pyglet
 
-from cost_function import suggest_poi_by_steps, steps_to_both_arrive
+from cost_function import cost_function, cost_components, load_weights
 from lbforaging.foraging.environment import Action, ForagingEnv  # pyright: ignore[reportMissingImports]
 from lbforaging.foraging.rendering import Viewer  # pyright: ignore[reportMissingImports]
 
@@ -79,12 +79,13 @@ def run_episode(
     lbf.players[1].level = 2
     lbf._gen_valid_moves()
 
-    # Build labels and set draw_badge BEFORE first render so labels are correct immediately
-    poi_values = {poi: steps_to_both_arrive(poi, agent_pos, human_pos) for poi in pois}
-    poi_to_label = {
-        poi: f"P{i+1}" + ("*" if poi == suggested_poi else "") + f" {poi_values[poi]} steps"
-        for i, poi in enumerate(pois)
-    }
+    # Build labels: cost only (model selects POI with min cost)
+    weights = load_weights()
+    poi_to_label = {}
+    for i, poi in enumerate(pois):
+        cost = cost_function(poi, agent_pos, human_pos, grid_size, *weights)
+        marker = "*" if poi == suggested_poi else ""
+        poi_to_label[poi] = f"P{i+1}{marker} {cost:.2f}"
 
     def draw_badge_h_a(row: int, col: int, level: int):
         p0, p1 = lbf.players[0].position, lbf.players[1].position
@@ -195,19 +196,22 @@ def run_with_movement(
         positions = sample_positions(grid_size, 5, rng.randint(0, 2**31 - 1))
         human_pos, agent_pos = positions[0], positions[1]
         pois = positions[2:5]
-        from train_rl import suggest_poi_rl
+        from train import suggest_poi_rl
         suggested_idx = suggest_poi_rl(pois, agent_pos, human_pos, grid_size=grid_size)
         suggested_poi = pois[suggested_idx]
 
-        step_lines = []
+        weights = load_weights()
+        grid_size = (8, 8)
+        lines = []
         for i, poi in enumerate(pois):
-            s = steps_to_both_arrive(poi, agent_pos, human_pos)
+            cost = cost_function(poi, agent_pos, human_pos, grid_size, *weights)
+            d_a, d_h, e, p = cost_components(poi, agent_pos, human_pos, grid_size)
             marker = " *" if poi == suggested_poi else ""
-            step_lines.append(f"  P{i+1} {poi}: {s} steps{marker}")
+            lines.append(f"  P{i+1} {poi}: cost={cost:.3f} (d_a={d_a:.2f} d_h={d_h:.2f} e={e:.2f} p={p:.2f}){marker}")
         print(f"\n--- Scenario {scenario} ---")
         print(f"H: {human_pos}  A: {agent_pos}  POIs: {pois}")
-        print("Steps (lower=better, direct path):")
-        print("\n".join(step_lines))
+        print("Per POI: cost (d_agent, d_human, energy, privacy) - lower=better:")
+        print("\n".join(lines))
         print(f"Suggested: P{suggested_idx+1} {suggested_poi}")
 
         completed = run_episode(
@@ -234,14 +238,22 @@ def main():
 
     if args.no_visualize:
         n_show = min(n_scenarios, 5) if n_scenarios > 0 else 5
+        weights = load_weights()
         for s in range(n_show):
             positions = sample_positions(grid_size, 5, rng.randint(0, 2**31 - 1))
             human_pos, agent_pos = positions[0], positions[1]
             pois = positions[2:5]
-            from train_rl import suggest_poi_rl
+            from train import suggest_poi_rl
             suggested_idx = suggest_poi_rl(pois, agent_pos, human_pos, grid_size=grid_size)
             suggested_poi = pois[suggested_idx]
-            print(f"Scenario {s+1}: H={human_pos} A={agent_pos} POIs={pois} -> P{suggested_idx+1} {suggested_poi}")
+            lines = []
+            for i, poi in enumerate(pois):
+                c = cost_function(poi, agent_pos, human_pos, grid_size, *weights)
+                m = " *" if poi == suggested_poi else ""
+                lines.append(f"  P{i+1} {poi}: cost={c:.3f}{m}")
+            print(f"Scenario {s+1}: H={human_pos} A={agent_pos} POIs={pois}")
+            print("\n".join(lines))
+            print(f"  -> P{suggested_idx+1} {suggested_poi}")
         print("\nRun without --no-visualize to see movement.")
     else:
         print(f"Running {n_scenarios if n_scenarios > 0 else 'infinite'} scenarios (RL/steps). Close window to exit.")
