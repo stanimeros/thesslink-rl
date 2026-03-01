@@ -10,7 +10,7 @@
 - **Cost components per POI:** d_agent, d_human (Manhattan distances), energy (20–80%), privacy
 - **Output:** POI with minimum cost
 - **Reward:** `-cost` (RL learns to minimize cost)
-- **Fallback:** `suggest_poi` (cost formula with default weights) when no RL model
+- **Baseline:** `suggest_poi` (cost formula) used for RL evaluation
 - **Demo:** Shows steps + cost per POI
 
 ## Setup
@@ -39,7 +39,7 @@ Produces `models/best_model.zip`, `models/ppo_poi_suggestion.zip`, and `training
 
 ### 2. Run demo (`demo.py`)
 
-Uses RL policy (or cost-based `suggest_poi` if no model). Shows **steps** and **cost** per POI.
+Uses RL policy. Shows **cost** per POI. Exits if model not found.
 
 ```bash
 python demo.py               # 5 scenarios
@@ -52,7 +52,7 @@ python demo.py --no-visualize
 
 ```
 thesslink-rl/
-├── cost_function.py    # cost_components, cost_function, suggest_poi, steps_to_both_arrive
+├── cost_function.py    # cost_components, cost_function, suggest_poi
 ├── poi_environment.py  # Gymnasium env for POI suggestion (RL)
 ├── train.py            # PPO training, suggest_poi_rl()
 ├── demo.py             # Demo with cost display
@@ -85,7 +85,7 @@ Lower cost = better suggestion. Default weights: 0.20 each.
 ## Flow
 
 1. **train.py** – Train RL policy (PPO, cost reward) → `models/best_model.zip`
-2. **demo.py** – Load RL model (or use suggest_poi) → suggest POI → visualize
+2. **demo.py** – Load RL model → suggest POI → visualize
 
 ## License
 

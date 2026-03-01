@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-ThessLink: Multiple scenarios. Cost function suggests POI, lb-foraging shows H and A movement.
+ThessLink: Multiple scenarios. RL policy suggests POI, lb-foraging shows H and A movement.
 
 Usage:
-  python run_thesslink_demo.py                 # 5 scenarios
-  python run_thesslink_demo.py --scenarios 10
-  python run_thesslink_demo.py --scenarios 0   # Infinite until window closed
-  python run_thesslink_demo.py --no-visualize
+  python demo.py                 # 5 scenarios
+  python demo.py --scenarios 10
+  python demo.py --scenarios 0    # Infinite until window closed
+  python demo.py --no-visualize
 """
 import argparse
 import random

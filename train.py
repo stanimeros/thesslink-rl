@@ -139,13 +139,6 @@ def suggest_poi_rl(
     return int(action)
 
 
-def make_env(
-    grid_size: tuple[int, int] = (8, 8),
-    seed: int | None = None,
-) -> PoISuggestionEnv:
-    return PoISuggestionEnv(grid_size=grid_size, seed=seed)
-
-
 def register_env():
     if "PoISuggestion-v0" in gym.envs.registry:
         gym.envs.registry.pop("PoISuggestion-v0", None)

@@ -1,8 +1,8 @@
 """
 Cost components and POI suggestion helpers.
 
-- suggest_poi_by_steps: picks POI that minimizes steps for both to arrive (no gradient descent)
-- cost_components, cost_function: used for observation features and optional cost-based ranking
+- cost_components, cost_function: used for observation features and cost-based ranking
+- suggest_poi: cost-based baseline (used for RL evaluation)
 """
 from typing import Tuple, List
 
@@ -59,45 +59,6 @@ def cost_function(
     """Compute cost for one POI. Lower = better. Includes d_agent, d_human, energy, privacy, steps."""
     comps = cost_components(poi, agent_pos, human_pos, grid_size)
     return sum(w * c for w, c in zip((w_d_agent, w_d_human, w_energy, w_privacy, w_steps), comps))
-
-
-def rank_pois(
-    pois: List[Tuple[int, int]],
-    agent_pos: Tuple[int, int],
-    human_pos: Tuple[int, int],
-    grid_size: Tuple[int, int] = (64, 64),
-    weights: Tuple[float, float, float, float, float] | None = None,
-) -> List[Tuple[int, Tuple[int, int], float]]:
-    """Sort POIs by cost (ascending). Returns [(rank, poi, cost), ...]"""
-    w = DEFAULT_WEIGHTS if weights is None else weights
-    costs = [
-        (cost_function(p, agent_pos, human_pos, grid_size, *w), p)
-        for p in pois
-    ]
-    costs.sort(key=lambda x: x[0])
-    return [(i + 1, poi, c) for i, (c, poi) in enumerate(costs)]
-
-
-def steps_to_both_arrive(
-    poi: Tuple[int, int],
-    agent_pos: Tuple[int, int],
-    human_pos: Tuple[int, int],
-) -> int:
-    """Steps for both to reach POI (Manhattan). Returns max(d_agent, d_human) - no circles."""
-    return max(
-        manhattan_distance(agent_pos, poi),
-        manhattan_distance(human_pos, poi),
-    )
-
-
-def suggest_poi_by_steps(
-    pois: List[Tuple[int, int]],
-    agent_pos: Tuple[int, int],
-    human_pos: Tuple[int, int],
-) -> int:
-    """Return index of POI that minimizes steps for both to arrive. Direct paths, no circles."""
-    steps = [steps_to_both_arrive(p, agent_pos, human_pos) for p in pois]
-    return int(np.argmin(steps))
 
 
 def suggest_poi(
