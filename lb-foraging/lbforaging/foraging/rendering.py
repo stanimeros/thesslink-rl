@@ -48,6 +48,12 @@ _WHITE = (255, 255, 255)
 _GREEN = (0, 255, 0)
 _RED = (255, 0, 0)
 
+# ThessLink: soft fill colors (R,G,B,A 0-1) instead of icons
+_COLOR_POI = (0.95, 0.94, 0.88, 0.65)   # warm cream for POIs
+_COLOR_HUMAN = (0.88, 0.92, 1.0, 0.75)   # soft blue for Human
+_COLOR_AGENT = (0.9, 0.94, 0.92, 0.75)   # soft green-gray for Agent
+_COLOR_BOTH = (0.88, 0.96, 0.92, 0.8)    # soft mint when H+A meet
+
 _BACKGROUND_COLOR = _WHITE
 _GRID_COLOR = _BLACK
 
@@ -169,45 +175,37 @@ class Viewer(object):
             )
         batch.draw()
 
+    def _draw_cell_fill(self, row, col, r, g, b, a):
+        """Draw a soft-filled rectangle for a cell (ThessLink: no icons)."""
+        gs = self.grid_size + 1
+        x1 = gs * col + 1
+        y1 = self.height - gs * (row + 1)
+        x2 = gs * (col + 1)
+        y2 = self.height - gs * row - 1
+        verts = [x1, y1, x2, y1, x2, y2, x1, y2]
+        colors = [r, g, b, a] * 4
+        pyglet.graphics.draw(4, gl.GL_QUADS, ("v2f", verts), ("c4f", colors))
+
     def _draw_food(self, env):
         idxes = list(zip(*env.field.nonzero()))
-        apples = []
-        batch = pyglet.graphics.Batch()
-
-        # print(env.field)
+        r, g, b, a = _COLOR_POI
         for row, col in idxes:
-            spr = pyglet.sprite.Sprite(
-                self.img_apple,
-                (self.grid_size + 1) * col,
-                self.height - (self.grid_size + 1) * (row + 1),
-                batch=batch,
-            )
-            spr.opacity = 140
-            apples.append(spr)
-        for a in apples:
-            a.update(scale=self.grid_size / a.width)
-        batch.draw()
-
+            self._draw_cell_fill(row, col, r, g, b, a)
         for row, col in idxes:
             self._draw_badge(row, col, env.field[row, col])
 
     def _draw_players(self, env):
-        players = []
-        batch = pyglet.graphics.Batch()
-
-        for player in env.players:
-            row, col = player.position
-            spr = pyglet.sprite.Sprite(
-                self.img_agent,
-                (self.grid_size + 1) * col,
-                self.height - (self.grid_size + 1) * (row + 1),
-                batch=batch,
-            )
-            spr.opacity = 140
-            players.append(spr)
-        for p in players:
-            p.update(scale=self.grid_size / p.width)
-        batch.draw()
+        pos0 = env.players[0].position
+        pos1 = env.players[1].position if len(env.players) > 1 else None
+        cell0 = (int(pos0[0]), int(pos0[1]))
+        cell1 = (int(pos1[0]), int(pos1[1])) if pos1 is not None else None
+        both_on_same = cell1 is not None and cell0 == cell1
+        if both_on_same:
+            self._draw_cell_fill(cell0[0], cell0[1], *_COLOR_BOTH)
+        else:
+            self._draw_cell_fill(cell0[0], cell0[1], *_COLOR_HUMAN)
+            if cell1 is not None:
+                self._draw_cell_fill(cell1[0], cell1[1], *_COLOR_AGENT)
         for p in env.players:
             self._draw_badge(*p.position, p.level)
 

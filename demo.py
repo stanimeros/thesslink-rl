@@ -110,17 +110,14 @@ def run_episode(
         pos0 = (int(p0[0]), int(p0[1])) if p0 is not None else (-1, -1)
         pos1 = (int(p1[0]), int(p1[1])) if p1 is not None else (-1, -1)
         cell = (row, col)
-        both_on_cell = pos0 == cell and pos1 == cell
-        is_agent_cell = pos0 == cell or pos1 == cell
-        if is_agent_cell:
-            if both_on_cell:
-                label, color = "M", COLOR_HUMAN
-            elif pos0 == cell:
+        # POI cells always show POI label (H/A hidden when they arrive)
+        if cell in poi_to_label_and_color:
+            label, color = poi_to_label_and_color[cell]
+        elif pos0 == cell or pos1 == cell:
+            if pos0 == cell:
                 label, color = "H", COLOR_HUMAN
             else:
                 label, color = "A", COLOR_AGENT
-        elif cell in poi_to_label_and_color:
-            label, color = poi_to_label_and_color[cell]
         else:
             label, color = str(level), COLOR_AGENT
 
