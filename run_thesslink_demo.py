@@ -13,13 +13,13 @@ import random
 import time
 
 import gymnasium as gym
-import lbforaging
+import lbforaging  # pyright: ignore[reportMissingImports]
 import numpy as np
 import pyglet
 
 from cost_function import cost_components, cost_function, load_weights, rank_pois, suggest_poi
-from lbforaging.foraging.environment import Action, ForagingEnv
-from lbforaging.foraging.rendering import Viewer
+from lbforaging.foraging.environment import Action, ForagingEnv  # pyright: ignore[reportMissingImports]
+from lbforaging.foraging.rendering import Viewer  # pyright: ignore[reportMissingImports]
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--no-visualize", action="store_true", help="Skip lb-foraging window")
