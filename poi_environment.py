@@ -11,7 +11,7 @@ from __future__ import annotations
 import gymnasium as gym
 import numpy as np
 
-from cost_function import cost_components, cost_function, load_weights
+from cost_function import cost_components, cost_function, DEFAULT_WEIGHTS
 
 
 def _normalize_pos(pos: tuple[int, int], rows: int, cols: int) -> np.ndarray:
@@ -59,7 +59,7 @@ class PoISuggestionEnv(gym.Env):
         super().__init__()
         self.grid_size = grid_size
         self.rows, self.cols = grid_size
-        self.weights = load_weights() if weights is None else weights
+        self.weights = DEFAULT_WEIGHTS if weights is None else weights
 
         # State: human(2) + agent(2) + poi1(2) + poi2(2) + poi3(2) + cost_components for each POI (5*3=15) = 25 floats
         self.observation_space = gym.spaces.Box(

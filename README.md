@@ -53,9 +53,9 @@ python demo.py --no-visualize
 ```
 thesslink-rl/
 ├── cost_function.py    # cost_components, cost_function, suggest_poi, steps_to_both_arrive
-├── environment.py      # Gymnasium env for POI suggestion (RL)
+├── poi_environment.py  # Gymnasium env for POI suggestion (RL)
 ├── train.py            # PPO training, suggest_poi_rl()
-├── demo.py             # Demo with steps + cost display
+├── demo.py             # Demo with cost display
 ├── models/              # RL models (best_model.zip, ppo_poi_suggestion.zip)
 ├── training_plot.png   # RL training plot
 ├── lb-foraging/        # lb-foraging env (visualization)

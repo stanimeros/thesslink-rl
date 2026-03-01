@@ -17,7 +17,7 @@ import lbforaging  # pyright: ignore[reportMissingImports]
 import numpy as np
 import pyglet
 
-from cost_function import cost_function, cost_components, load_weights
+from cost_function import cost_function, cost_components, DEFAULT_WEIGHTS
 from lbforaging.foraging.environment import Action, ForagingEnv  # pyright: ignore[reportMissingImports]
 from lbforaging.foraging.rendering import Viewer  # pyright: ignore[reportMissingImports]
 
@@ -80,7 +80,7 @@ def run_episode(
     lbf._gen_valid_moves()
 
     # Build labels: cost only (model selects POI with min cost)
-    weights = load_weights()
+    weights = DEFAULT_WEIGHTS
     poi_to_label = {}
     for i, poi in enumerate(pois):
         cost = cost_function(poi, agent_pos, human_pos, grid_size, *weights)
@@ -200,7 +200,7 @@ def run_with_movement(
         suggested_idx = suggest_poi_rl(pois, agent_pos, human_pos, grid_size=grid_size)
         suggested_poi = pois[suggested_idx]
 
-        weights = load_weights()
+        weights = DEFAULT_WEIGHTS
         grid_size = (8, 8)
         lines = []
         for i, poi in enumerate(pois):
@@ -238,7 +238,7 @@ def main():
 
     if args.no_visualize:
         n_show = min(n_scenarios, 5) if n_scenarios > 0 else 5
-        weights = load_weights()
+        weights = DEFAULT_WEIGHTS
         for s in range(n_show):
             positions = sample_positions(grid_size, 5, rng.randint(0, 2**31 - 1))
             human_pos, agent_pos = positions[0], positions[1]

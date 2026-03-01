@@ -17,7 +17,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 
 from cost_function import suggest_poi
-from environment import PoISuggestionEnv
+from poi_environment import PoISuggestionEnv
 
 MODEL_DIR = Path(__file__).parent / "models"
 MODEL_PATH = MODEL_DIR / "ppo_poi_suggestion"
@@ -131,7 +131,7 @@ def suggest_poi_rl(
             print("Model not found. Run train.py first to train the RL policy.")
             sys.exit(1)
 
-    from environment import build_observation
+    from poi_environment import build_observation
 
     model = PPO.load(str(path))
     obs = build_observation(human_pos, agent_pos, pois, grid_size)
@@ -151,7 +151,7 @@ def register_env():
         gym.envs.registry.pop("PoISuggestion-v0", None)
     gym.register(
         id="PoISuggestion-v0",
-        entry_point="environment:PoISuggestionEnv",
+        entry_point="poi_environment:PoISuggestionEnv",
         kwargs={"grid_size": (8, 8)},
     )
 

@@ -4,14 +4,11 @@ Cost components and POI suggestion helpers.
 - suggest_poi_by_steps: picks POI that minimizes steps for both to arrive (no gradient descent)
 - cost_components, cost_function: used for observation features and optional cost-based ranking
 """
-import json
-import os
-from pathlib import Path
 from typing import Tuple, List
 
 import numpy as np
 
-WEIGHTS_FILE = Path(__file__).parent / "thesslink_weights.json"
+DEFAULT_WEIGHTS = (0.20, 0.20, 0.20, 0.20, 0.20)
 
 
 def manhattan_distance(pos_a: Tuple[int, int], pos_b: Tuple[int, int]) -> float:
@@ -72,7 +69,7 @@ def rank_pois(
     weights: Tuple[float, float, float, float, float] | None = None,
 ) -> List[Tuple[int, Tuple[int, int], float]]:
     """Sort POIs by cost (ascending). Returns [(rank, poi, cost), ...]"""
-    w = load_weights() if weights is None else weights
+    w = DEFAULT_WEIGHTS if weights is None else weights
     costs = [
         (cost_function(p, agent_pos, human_pos, grid_size, *w), p)
         for p in pois
@@ -110,42 +107,10 @@ def suggest_poi(
     weights: Tuple[float, float, float, float, float] | None = None,
     grid_size: Tuple[int, int] = (64, 64),
 ) -> int:
-    """Return index of best POI by cost (legacy, uses saved weights). Prefer suggest_poi_by_steps."""
-    w = load_weights() if weights is None else weights
+    """Return index of best POI by cost. Uses DEFAULT_WEIGHTS when weights is None."""
+    w = DEFAULT_WEIGHTS if weights is None else weights
     costs = [
         sum(wi * c for wi, c in zip(w, cost_components(p, agent_pos, human_pos, grid_size)))
         for p in pois
     ]
     return int(np.argmin(costs))
-
-
-def save_weights(weights: Tuple[float, ...], path: Path | str = WEIGHTS_FILE) -> None:
-    """Save weights to JSON file."""
-    data = {
-        "d_agent": weights[0],
-        "d_human": weights[1],
-        "energy": weights[2],
-        "privacy": weights[3],
-        "steps": weights[4],
-    }
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
-
-
-def load_weights(path: Path | str = WEIGHTS_FILE) -> Tuple[float, float, float, float, float]:
-    """Load weights from JSON file. Returns defaults if file missing."""
-    default = (0.20, 0.20, 0.20, 0.20, 0.20)
-    if not os.path.exists(path):
-        return default
-    with open(path) as f:
-        data = json.load(f)
-    if "steps" in data:
-        return (data["d_agent"], data["d_human"], data["energy"], data["privacy"], data["steps"])
-    if "d_agent" in data:
-        return (data["d_agent"], data["d_human"], data["energy"], data["privacy"], 0.20)
-    w_d = data.get("distance", 1.0 / 5)
-    w_p = data.get("privacy", 1.0 / 5)
-    w_e = data.get("energy", 1.0 / 5)
-    return (w_d / 2, w_d / 2, w_e, w_p, 1.0 / 5)
-
-
