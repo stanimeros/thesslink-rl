@@ -176,14 +176,14 @@ class Viewer(object):
 
         # print(env.field)
         for row, col in idxes:
-            apples.append(
-                pyglet.sprite.Sprite(
-                    self.img_apple,
-                    (self.grid_size + 1) * col,
-                    self.height - (self.grid_size + 1) * (row + 1),
-                    batch=batch,
-                )
+            spr = pyglet.sprite.Sprite(
+                self.img_apple,
+                (self.grid_size + 1) * col,
+                self.height - (self.grid_size + 1) * (row + 1),
+                batch=batch,
             )
+            spr.opacity = 140
+            apples.append(spr)
         for a in apples:
             a.update(scale=self.grid_size / a.width)
         batch.draw()
@@ -197,14 +197,14 @@ class Viewer(object):
 
         for player in env.players:
             row, col = player.position
-            players.append(
-                pyglet.sprite.Sprite(
-                    self.img_agent,
-                    (self.grid_size + 1) * col,
-                    self.height - (self.grid_size + 1) * (row + 1),
-                    batch=batch,
-                )
+            spr = pyglet.sprite.Sprite(
+                self.img_agent,
+                (self.grid_size + 1) * col,
+                self.height - (self.grid_size + 1) * (row + 1),
+                batch=batch,
             )
+            spr.opacity = 140
+            players.append(spr)
         for p in players:
             p.update(scale=self.grid_size / p.width)
         batch.draw()

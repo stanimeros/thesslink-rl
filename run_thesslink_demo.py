@@ -9,7 +9,6 @@ Usage:
   python run_thesslink_demo.py --no-visualize
 """
 import argparse
-import math
 import random
 import time
 
@@ -17,7 +16,6 @@ import gymnasium as gym
 import lbforaging
 import numpy as np
 import pyglet
-from pyglet.gl import GL_LINE_LOOP, GL_POLYGON, glColor3ub
 
 from cost_function import cost_components, cost_function, load_weights, rank_pois, suggest_poi
 from lbforaging.foraging.environment import Action, ForagingEnv
@@ -82,9 +80,7 @@ def run_episode(
     lbf.players[1].level = 2
     lbf._gen_valid_moves()
 
-    env.render()
-    time.sleep(1.0)
-
+    # Build labels and set draw_badge BEFORE first render so labels are correct immediately
     poi_costs = {
         poi: cost_function(poi, agent_pos, human_pos, grid_size, *weights)
         for poi in pois
@@ -95,39 +91,41 @@ def run_episode(
     }
 
     def draw_badge_h_a(row: int, col: int, level: int):
-        if (row, col) in poi_to_label:
-            label = poi_to_label[(row, col)]
-        elif level == 1:
-            label = "H"
-        elif level == 2:
-            label = "A"
+        p0, p1 = lbf.players[0].position, lbf.players[1].position
+        pos0 = (int(p0[0]), int(p0[1])) if p0 is not None else (-1, -1)
+        pos1 = (int(p1[0]), int(p1[1])) if p1 is not None else (-1, -1)
+        cell = (row, col)
+        both_on_cell = pos0 == cell and pos1 == cell
+        # Called from _draw_players (agent) vs _draw_food (POI) - check if any player is here
+        is_agent_cell = pos0 == cell or pos1 == cell
+        if is_agent_cell:
+            if both_on_cell:
+                label = "H+A"
+            elif pos0 == cell:
+                label = "H"
+            else:
+                label = "A"
+        elif cell in poi_to_label:
+            label = poi_to_label[cell]
         else:
             label = str(level)
-        resolution = 6
-        radius = viewer.grid_size / 7
-        badge_x = int(col * (viewer.grid_size + 1) + (3 / 4) * (viewer.grid_size + 1))
-        badge_y = int(viewer.height - (viewer.grid_size + 1) * (row + 1) + (1 / 4) * (viewer.grid_size + 1))
-        verts = []
-        for i in range(resolution):
-            angle = 2 * math.pi * i / resolution
-            verts += [radius * math.cos(angle) + badge_x, radius * math.sin(angle) + badge_y]
-        circle = pyglet.graphics.vertex_list(resolution, ("v2f", verts))
-        glColor3ub(255, 255, 255)
-        circle.draw(GL_POLYGON)
-        glColor3ub(0, 0, 0)
-        circle.draw(GL_LINE_LOOP)
+        badge_x = int(col * (viewer.grid_size + 1) + (viewer.grid_size + 1) / 2)
+        badge_y = int(viewer.height - (viewer.grid_size + 1) * (row + 1) + (viewer.grid_size + 1) / 2)
         pyglet.text.Label(
             label,
-            font_size=8,
+            font_size=11,
             bold=True,
             x=badge_x,
-            y=badge_y + 2,
+            y=badge_y,
             anchor_x="center",
             anchor_y="center",
-            color=(0, 0, 0, 255),
+            color=(20, 20, 20, 255),
         ).draw()
 
     viewer._draw_badge = draw_badge_h_a
+
+    env.render()
+    time.sleep(1)
 
     def at_or_adjacent(p: tuple[int, int], t: tuple[int, int]) -> bool:
         """True if p is on t or one step away (Manhattan)."""
@@ -187,6 +185,11 @@ def run_with_movement(
     lbf._init_render()
     viewer = lbf.viewer
     assert isinstance(viewer, Viewer)
+    # Larger cells for better visibility
+    viewer.grid_size = 56
+    viewer.width = 1 + viewer.cols * (viewer.grid_size + 1)
+    viewer.height = 1 + viewer.rows * (viewer.grid_size + 1)
+    viewer.window.set_size(viewer.width, viewer.height)
 
     scenario = 0
     while viewer.isopen:
