@@ -205,12 +205,12 @@ def run_with_movement(
         lines = []
         for i, poi in enumerate(pois):
             cost = cost_function(poi, agent_pos, human_pos, grid_size, *weights)
-            d_a, d_h, e, p = cost_components(poi, agent_pos, human_pos, grid_size)
+            d_a, d_h, e, p, steps = cost_components(poi, agent_pos, human_pos, grid_size)
             marker = " *" if poi == suggested_poi else ""
-            lines.append(f"  P{i+1} {poi}: cost={cost:.3f} (d_a={d_a:.2f} d_h={d_h:.2f} e={e:.2f} p={p:.2f}){marker}")
+            lines.append(f"  P{i+1} {poi}: cost={cost:.3f} (d_a={d_a:.2f} d_h={d_h:.2f} e={e:.2f} p={p:.2f} steps={steps:.2f}){marker}")
         print(f"\n--- Scenario {scenario} ---")
         print(f"H: {human_pos}  A: {agent_pos}  POIs: {pois}")
-        print("Per POI: cost (d_agent, d_human, energy, privacy) - lower=better:")
+        print("Per POI: cost (d_agent, d_human, energy, privacy, steps) - lower=better:")
         print("\n".join(lines))
         print(f"Suggested: P{suggested_idx+1} {suggested_poi}")
 

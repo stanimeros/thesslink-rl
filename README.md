@@ -29,7 +29,6 @@ pip install -r requirements.txt
 ```bash
 python train.py                    # Train PPO 50k steps (cost reward), save to models/
 python train.py --steps 100000     # More training
-python train.py --reward steps     # Use steps-based reward instead of cost
 python train.py --no-plot          # Skip generating training_plot.png
 python train.py --no-train         # Evaluate loaded model vs cost baseline
 ```
@@ -67,14 +66,15 @@ thesslink-rl/
 ## Cost formula
 
 ```
-cost = w_d_agent×d_agent + w_d_human×d_human + w_energy×energy + w_privacy×privacy
+cost = w_d_agent×d_agent + w_d_human×d_human + w_energy×energy + w_privacy×privacy + w_steps×steps
 ```
 
 - **d_agent, d_human:** Manhattan distances (agent→POI, human→POI), normalized
 - **energy:** 0.2 + 0.6×d_human (range 20–80%)
 - **privacy:** 1 − d_human (basic)
+- **steps:** max(d_agent, d_human) — min steps for both to arrive
 
-Lower cost = better suggestion. Default weights: 0.25 each.
+Lower cost = better suggestion. Default weights: 0.20 each.
 
 ## Reinforcement Learning
 
