@@ -10,7 +10,7 @@
 - **Cost components per POI:** Travel Effort (agent, human), energy (human effort, range [0.2, 0.8]), privacy (prefer near human), Time-to-Meet
 - **Output:** POI with minimum cost
 - **Reward:** `-cost` (RL learns to minimize cost)
-- **Baseline:** `suggest_poi` (cost formula) used for RL evaluation
+- **Baseline:** `pick_best_poi` (cost formula) used for RL evaluation
 - **Demo:** Shows steps + cost per POI
 
 ## Setup
@@ -53,7 +53,7 @@ python demo.py --pois 3           # 3 POIs
 
 ```
 thesslink-rl/
-├── cost_function.py    # cost_components, cost_function, suggest_poi
+├── cost_function.py    # cost_components, cost_function, pick_best_poi
 ├── poi_environment.py  # Gymnasium env for POI suggestion (RL)
 ├── train.py            # PPO training, suggest_poi_rl()
 ├── demo.py             # Demo with cost display

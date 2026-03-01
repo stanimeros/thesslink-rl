@@ -222,7 +222,7 @@ def run_with_movement(
     viewer.height = 1 + viewer.rows * (viewer.grid_size + 1)
     viewer.window.set_size(viewer.width, viewer.height)
 
-    from cost_function import suggest_poi
+    from cost_function import pick_best_poi
 
     scenario = 0
     while viewer.isopen:
@@ -233,7 +233,7 @@ def run_with_movement(
         positions = sample_positions(grid_size, n_positions, rng.randint(0, 2**31 - 1))
         human_pos, agent_pos = positions[0], positions[1]
         pois = positions[2:n_positions]
-        suggested_idx = suggest_poi(pois, agent_pos, human_pos, grid_size=grid_size)
+        suggested_idx = pick_best_poi(pois, agent_pos, human_pos, grid_size=grid_size)
         suggested_poi = pois[suggested_idx]
 
         weights = DEFAULT_WEIGHTS
@@ -280,8 +280,8 @@ def main():
             positions = sample_positions(grid_size, n_positions, rng.randint(0, 2**31 - 1))
             human_pos, agent_pos = positions[0], positions[1]
             pois = positions[2:n_positions]
-            from cost_function import suggest_poi
-            suggested_idx = suggest_poi(pois, agent_pos, human_pos, grid_size=grid_size)
+            from cost_function import pick_best_poi
+            suggested_idx = pick_best_poi(pois, agent_pos, human_pos, grid_size=grid_size)
             suggested_poi = pois[suggested_idx]
             lines = []
             for i, poi in enumerate(pois):

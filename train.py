@@ -16,7 +16,7 @@ import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 
-from cost_function import suggest_poi
+from cost_function import pick_best_poi
 from poi_environment import PoISuggestionEnv
 
 MODEL_DIR = Path(__file__).parent / "models"
@@ -60,7 +60,7 @@ class PlottingCallback(BaseCallback):
             self.reward_history.append(mean_reward)
             self.step_history.append(self.num_timesteps)
 
-            # Agreement with cost baseline (suggest_poi)
+            # Agreement with cost baseline (pick_best_poi)
             agreements = 0
             for _ in range(self.n_eval_episodes):
                 obs, _ = eval_env.reset()
@@ -68,7 +68,7 @@ class PlottingCallback(BaseCallback):
                 human_pos = eval_env._human_pos
                 agent_pos = eval_env._agent_pos
                 pois = eval_env._pois
-                baseline_action = suggest_poi(pois, agent_pos, human_pos, grid_size=(64, 64))
+                baseline_action = pick_best_poi(pois, agent_pos, human_pos, grid_size=(64, 64))
                 agreements += 1 if rl_action == baseline_action else 0
             self.agreement_history.append(agreements / self.n_eval_episodes)
         return True
@@ -88,13 +88,13 @@ class PlottingCallback(BaseCallback):
 
         if self.agreement_history:
             axes[1].plot(steps, self.agreement_history, color="tab:blue", linewidth=0.8, alpha=0.9, marker="o", markersize=3)
-            axes[1].set_ylabel("Agreement with suggest_poi")
+            axes[1].set_ylabel("Agreement with pick_best_poi")
             axes[1].set_ylim(0, 1.05)
         else:
             axes[1].plot(steps, self.reward_history, color="tab:blue", linewidth=0.8, alpha=0.9)
             axes[1].set_ylabel("Mean Reward")
         axes[1].set_xlabel("Timesteps")
-        axes[1].set_title("Agreement with suggest_poi" if self.agreement_history else "Mean Reward")
+        axes[1].set_title("Agreement with pick_best_poi" if self.agreement_history else "Mean Reward")
         axes[1].grid(True, alpha=0.3)
 
         plt.tight_layout()
@@ -208,7 +208,7 @@ def evaluate_vs_baseline(
     n_episodes: int = 500,
     grid_size: tuple[int, int] = (64, 64),
 ) -> dict:
-    """Compare RL policy vs cost-based suggest_poi. Returns agreement rate."""
+    """Compare RL policy vs cost-based pick_best_poi. Returns agreement rate."""
     env = PoISuggestionEnv(grid_size=grid_size, seed=42)
     agreements = 0
     total = 0
@@ -221,7 +221,7 @@ def evaluate_vs_baseline(
         human_pos = env._human_pos
         agent_pos = env._agent_pos
         pois = env._pois
-        baseline_action = suggest_poi(pois, agent_pos, human_pos, grid_size=grid_size)
+        baseline_action = pick_best_poi(pois, agent_pos, human_pos, grid_size=grid_size)
 
         if rl_action == baseline_action:
             agreements += 1
@@ -259,7 +259,7 @@ def main():
     )
     print("\nEvaluating vs cost baseline...")
     stats = evaluate_vs_baseline(model, n_episodes=args.eval_episodes)
-    print(f"Agreement with cost-based suggest_poi: {stats['agreement']:.1%}")
+    print(f"Agreement with cost-based pick_best_poi: {stats['agreement']:.1%}")
 
 
 if __name__ == "__main__":
