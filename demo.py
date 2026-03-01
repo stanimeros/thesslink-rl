@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-ThessLink: Multiple scenarios. RL policy suggests POI, lb-foraging shows H and A movement.
+ThessLink: Multiple scenarios. Cost-based POI suggestion, lb-foraging shows H and A movement.
 
 Usage:
-  python demo.py                 # 5 scenarios
-  python demo.py --scenarios 10
-  python demo.py --scenarios 0    # Infinite until window closed
+  python demo.py                    # 5 scenarios, 5 POIs
+  python demo.py --scenarios 10 --pois 7
+  python demo.py --scenarios 0      # Infinite until window closed
   python demo.py --no-visualize
+  python demo.py --pois 3           # 3 POIs (matches RL training)
 """
 import argparse
 import random
@@ -24,6 +25,7 @@ from lbforaging.foraging.rendering import Viewer  # pyright: ignore[reportMissin
 parser = argparse.ArgumentParser()
 parser.add_argument("--no-visualize", action="store_true", help="Skip lb-foraging window")
 parser.add_argument("--scenarios", type=int, default=5, help="Scenarios to run (0=infinite until window closed)")
+parser.add_argument("--pois", type=int, default=5, help="Number of POIs per scenario")
 args = parser.parse_args()
 
 
@@ -52,6 +54,14 @@ def step_toward(pos: tuple[int, int], target: tuple[int, int]) -> Action:
     return Action.NONE
 
 
+# Label colors: optimal=green, middle=blue, worst=red
+COLOR_OPTIMAL = (0, 140, 0, 255)    # green
+COLOR_LESS = (0, 80, 200, 255)     # blue
+COLOR_WORST = (200, 0, 0, 255)     # red
+COLOR_HUMAN = (0, 0, 0, 255)       # black for H
+COLOR_AGENT = (128, 128, 128, 255)  # grey for A
+
+
 def run_episode(
     env: gym.Env,
     lbf: ForagingEnv,
@@ -68,7 +78,7 @@ def run_episode(
     lbf.current_step = 0
     lbf._game_over = False
 
-    # Set state: H and A at positions, 3 food at POIs
+    # Set state: H and A at positions, N food at POIs
     lbf.field = np.zeros((rows, cols), dtype=np.int32)  # type: ignore[assignment]
     for i, poi in enumerate(pois):
         level = 2 if poi == suggested_poi else 1
@@ -79,13 +89,21 @@ def run_episode(
     lbf.players[1].level = 2
     lbf._gen_valid_moves()
 
-    # Build labels: cost only (model selects POI with min cost)
+    # Build labels with cost and color (optimal=green, less=blue, worst=red)
     weights = DEFAULT_WEIGHTS
-    poi_to_label = {}
-    for i, poi in enumerate(pois):
-        cost = cost_function(poi, agent_pos, human_pos, grid_size, *weights)
-        marker = "*" if poi == suggested_poi else ""
-        poi_to_label[poi] = f"P{i+1}{marker} {cost:.2f}"
+    costs_with_poi = [(cost_function(p, agent_pos, human_pos, grid_size, *weights), p) for p in pois]
+    costs_with_poi.sort(key=lambda x: x[0])
+    poi_to_label_and_color: dict[tuple[int, int], tuple[str, tuple[int, int, int, int]]] = {}
+    for i, (cost, poi) in enumerate(costs_with_poi):
+        rank = i  # 0=best, n-1=worst
+        label = f"P{pois.index(poi)+1} {cost:.2f}"
+        if rank == 0:
+            color = COLOR_OPTIMAL
+        elif rank == len(pois) - 1:
+            color = COLOR_WORST
+        else:
+            color = COLOR_LESS
+        poi_to_label_and_color[poi] = (label, color)
 
     def draw_badge_h_a(row: int, col: int, level: int):
         p0, p1 = lbf.players[0].position, lbf.players[1].position
@@ -93,30 +111,44 @@ def run_episode(
         pos1 = (int(p1[0]), int(p1[1])) if p1 is not None else (-1, -1)
         cell = (row, col)
         both_on_cell = pos0 == cell and pos1 == cell
-        # Called from _draw_players (agent) vs _draw_food (POI) - check if any player is here
         is_agent_cell = pos0 == cell or pos1 == cell
         if is_agent_cell:
             if both_on_cell:
-                label = "H+A"
+                label, color = "M", COLOR_HUMAN
             elif pos0 == cell:
-                label = "H"
+                label, color = "H", COLOR_HUMAN
             else:
-                label = "A"
-        elif cell in poi_to_label:
-            label = poi_to_label[cell]
+                label, color = "A", COLOR_AGENT
+        elif cell in poi_to_label_and_color:
+            label, color = poi_to_label_and_color[cell]
         else:
-            label = str(level)
-        badge_x = int(col * (viewer.grid_size + 1) + (viewer.grid_size + 1) / 2)
-        badge_y = int(viewer.height - (viewer.grid_size + 1) * (row + 1) + (viewer.grid_size + 1) / 2)
+            label, color = str(level), COLOR_AGENT
+
+        gs = viewer.grid_size + 1
+        badge_x = col * gs + gs / 2
+        badge_y = viewer.height - gs * (row + 1) + gs / 2
+        # Offset label for edge cells so it stays visible (avoid clipping)
+        dx = 0
+        dy = 0
+        if row == 0:
+            dy = -8   # top row: move label down
+        elif row == rows - 1:
+            dy = 8    # bottom row: move label up
+        if col == 0:
+            dx = 12   # left edge: move label right
+        elif col == cols - 1:
+            dx = -12  # right edge: move label left
+        x = int(badge_x + dx)
+        y = int(badge_y + dy)
         pyglet.text.Label(
             label,
-            font_size=11,
-            bold=True,
-            x=badge_x,
-            y=badge_y,
+            font_size=10,
+            bold=False,
+            x=x,
+            y=y,
             anchor_x="center",
             anchor_y="center",
-            color=(20, 20, 20, 255),
+            color=color,
         ).draw()
 
     viewer._draw_badge = draw_badge_h_a
@@ -167,11 +199,13 @@ def run_episode(
 def run_with_movement(
     grid_size: tuple[int, int],
     n_scenarios: int,
+    n_pois: int,
     rng: random.Random,
 ):
     """Run multiple scenarios. After each episode completes, start next."""
+    env_id = "Foraging-64x64-2p-10f-v3" if n_pois > 3 else "Foraging-64x64-2p-3f-v3"
     env = gym.make(
-        "Foraging-64x64-2p-3f-v3",
+        env_id,
         render_mode="human",
         allow_agent_on_food=True,
         allow_agent_on_agent=True,
@@ -182,26 +216,27 @@ def run_with_movement(
     lbf._init_render()
     viewer = lbf.viewer
     assert isinstance(viewer, Viewer)
-    # Cell size for 64x64 grid (smaller than 8x8 to fit window)
+    # Cell size for 64x64 grid (smaller to fit window)
     viewer.grid_size = 9
     viewer.width = 1 + viewer.cols * (viewer.grid_size + 1)
     viewer.height = 1 + viewer.rows * (viewer.grid_size + 1)
     viewer.window.set_size(viewer.width, viewer.height)
+
+    from cost_function import suggest_poi
 
     scenario = 0
     while viewer.isopen:
         if n_scenarios > 0 and scenario >= n_scenarios:
             break
         scenario += 1
-        positions = sample_positions(grid_size, 5, rng.randint(0, 2**31 - 1))
+        n_positions = 2 + n_pois
+        positions = sample_positions(grid_size, n_positions, rng.randint(0, 2**31 - 1))
         human_pos, agent_pos = positions[0], positions[1]
-        pois = positions[2:5]
-        from train import suggest_poi_rl
-        suggested_idx = suggest_poi_rl(pois, agent_pos, human_pos, grid_size=grid_size)
+        pois = positions[2:n_positions]
+        suggested_idx = suggest_poi(pois, agent_pos, human_pos, grid_size=grid_size)
         suggested_poi = pois[suggested_idx]
 
         weights = DEFAULT_WEIGHTS
-        grid_size = (64, 64)
         lines = []
         for i, poi in enumerate(pois):
             cost = cost_function(poi, agent_pos, human_pos, grid_size, *weights)
@@ -231,6 +266,7 @@ def main():
     grid_size = (64, 64)
     rng = random.Random(42)
     n_scenarios = args.scenarios
+    n_pois = max(2, min(args.pois, 10))  # clamp 2–10 for demo
 
     print("=" * 50)
     print("ThessLink: Multiple scenarios")
@@ -240,11 +276,12 @@ def main():
         n_show = min(n_scenarios, 5) if n_scenarios > 0 else 5
         weights = DEFAULT_WEIGHTS
         for s in range(n_show):
-            positions = sample_positions(grid_size, 5, rng.randint(0, 2**31 - 1))
+            n_positions = 2 + n_pois
+            positions = sample_positions(grid_size, n_positions, rng.randint(0, 2**31 - 1))
             human_pos, agent_pos = positions[0], positions[1]
-            pois = positions[2:5]
-            from train import suggest_poi_rl
-            suggested_idx = suggest_poi_rl(pois, agent_pos, human_pos, grid_size=grid_size)
+            pois = positions[2:n_positions]
+            from cost_function import suggest_poi
+            suggested_idx = suggest_poi(pois, agent_pos, human_pos, grid_size=grid_size)
             suggested_poi = pois[suggested_idx]
             lines = []
             for i, poi in enumerate(pois):
@@ -256,8 +293,8 @@ def main():
             print(f"  -> P{suggested_idx+1} {suggested_poi}")
         print("\nRun without --no-visualize to see movement.")
     else:
-        print(f"Running {n_scenarios if n_scenarios > 0 else 'infinite'} scenarios (RL/steps). Close window to exit.")
-        run_with_movement(grid_size, n_scenarios, rng)
+        print(f"Running {n_scenarios if n_scenarios > 0 else 'infinite'} scenarios, {n_pois} POIs. Close window to exit.")
+        run_with_movement(grid_size, n_scenarios, n_pois, rng)
 
 
 if __name__ == "__main__":

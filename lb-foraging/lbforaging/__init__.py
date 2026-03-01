@@ -42,7 +42,7 @@ for s, p, f, mfl, c, po, pen in product(
         },
     )
 
-# ThessLink: 64x64 grid for POI suggestion demo
+# ThessLink: 64x64 grid for POI suggestion demo (3 and 5+ food for configurable N POIs)
 register(
     id="Foraging-64x64-2p-3f-v3",
     entry_point="lbforaging.foraging:ForagingEnv",
@@ -54,6 +54,24 @@ register(
         "min_food_level": 1,
         "max_food_level": None,
         "max_num_food": 3,
+        "sight": 64,
+        "max_episode_steps": 200,
+        "force_coop": True,
+        "grid_observation": False,
+        "penalty": 0.0,
+    },
+)
+register(
+    id="Foraging-64x64-2p-10f-v3",
+    entry_point="lbforaging.foraging:ForagingEnv",
+    kwargs={
+        "players": 2,
+        "min_player_level": 1,
+        "max_player_level": 2,
+        "field_size": (64, 64),
+        "min_food_level": 1,
+        "max_food_level": None,
+        "max_num_food": 10,
         "sight": 64,
         "max_episode_steps": 200,
         "force_coop": True,
