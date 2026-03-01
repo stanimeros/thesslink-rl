@@ -4,7 +4,7 @@ Gymnasium environment for POI suggestion. Used for Reinforcement Learning traini
 State: (human_pos, agent_pos, poi1, poi2, poi3) normalized to [0,1], plus cost components
        for each POI (travel_effort_agent, travel_effort_human, energy, privacy, time_to_meet) = 10 + 15 = 25 floats
 Action: Discrete(3) - which POI to suggest (0, 1, 2)
-Reward: -cost (cost includes Travel Effort, energy, privacy, Time-to-Meet)
+Reward: -cost (Travel Effort, energy expenditure, privacy, Time-to-Meet)
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ class PoISuggestionEnv(gym.Env):
     RL environment for learning which POI to suggest.
 
     Each episode: sample random (human_pos, agent_pos, 3 POIs).
-    Agent chooses one POI. Reward = -cost (cost includes Travel Effort, energy, privacy, Time-to-Meet).
+    Agent chooses one POI. Reward = -cost (Travel Effort, energy expenditure, privacy, Time-to-Meet).
     """
 
     metadata = {"render_modes": []}

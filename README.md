@@ -1,13 +1,13 @@
 # ThessLink RL
 
-**Reinforcement Learning** for meeting point suggestion. The model takes **Travel Effort** (agent, human distances), **Time-to-Meet**, **energy** (20–80% for human), and **privacy** (basic), calculates a cost for each POI, and selects the **minimum cost**.
+**Reinforcement Learning** for meeting point suggestion. The model takes **Travel Effort** (agent, human distances), **Time-to-Meet**, **energy** (penalizes human travel—closer POIs cost less), and **privacy** (prefer meeting near human's location), calculates a cost for each POI, and selects the **minimum cost**.
 
 ![lb-foraging environment](lb-foraging/docs/img/lbf.gif)
 
 ## Overview
 
 - **Inputs:** Human position, agent position, 3 POI suggestions (64×64 grid)
-- **Cost components per POI:** Travel Effort (agent, human), energy (20–80%), privacy, Time-to-Meet
+- **Cost components per POI:** Travel Effort (agent, human), energy (human effort, range [0.2, 0.8]), privacy (prefer near human), Time-to-Meet
 - **Output:** POI with minimum cost
 - **Reward:** `-cost` (RL learns to minimize cost)
 - **Baseline:** `suggest_poi` (cost formula) used for RL evaluation
@@ -65,16 +65,26 @@ thesslink-rl/
 
 ## Cost formula
 
-```
-cost = w_TE_a×travel_effort_agent + w_TE_h×travel_effort_human + w_energy×energy + w_privacy×privacy + w_TTM×time_to_meet
-```
+### Main cost
 
-- **Travel Effort (agent, human):** Manhattan distances (agent→POI, human→POI), normalized
-- **energy:** 0.2 + 0.6×travel_effort_human (range 20–80%)
-- **privacy:** 1 − travel_effort_human (basic)
-- **Time-to-Meet:** max(travel_effort_agent, travel_effort_human) — min steps for both to arrive
+$$\text{cost} = w_{TE_a} \cdot d_A + w_{TE_h} \cdot d_H + w_e \cdot e + w_p \cdot p + w_{TTM} \cdot ttm$$
 
-Lower cost = better suggestion. Default weights: 0.20 each.
+### Variable definitions
+
+| Symbol | Formula | Description |
+|--------|---------|--------------|
+| $d_A$ | $\frac{\text{Manhattan}(\text{agent}, \text{POI})}{D_{\max}}$ | Travel Effort (agent → POI), normalized |
+| $d_H$ | $\frac{\text{Manhattan}(\text{human}, \text{POI})}{D_{\max}}$ | Travel Effort (human → POI), normalized |
+| $D_{\max}$ | $\text{rows} + \text{cols}$ | Max Manhattan distance on grid |
+| $e$ | $0.2 + 0.6 \cdot d_H$ | Energy expenditure, range $[0.2, 0.8]$ |
+| $p$ | $1 - d_H$ | Privacy (higher when POI near human) |
+| $ttm$ | $\max(d_A, d_H)$ | Time-to-Meet |
+
+### Weighted sum (expanded)
+
+$$\text{cost} = w_{TE_a} \cdot d_A + w_{TE_h} \cdot d_H + w_e \cdot (0.2 + 0.6 d_H) + w_p \cdot (1 - d_H) + w_{TTM} \cdot \max(d_A, d_H)$$
+
+Lower cost = better suggestion. Default weights: $w_{TE_a} = w_{TE_h} = w_e = w_p = w_{TTM} = 0.20$.
 
 ## Reinforcement Learning
 

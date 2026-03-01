@@ -33,10 +33,12 @@ def cost_components(
     travel_effort_agent = manhattan_distance(agent_pos, poi) / max_dist
     travel_effort_human = manhattan_distance(human_pos, poi) / max_dist
 
-    # 2. Human energy: always in [0.2, 0.8] - humans want min energy but not 0
+    # 2. Human energy expenditure: [0.2, 0.8]. Penalizes human travel distance;
+    #    closer POIs = lower energy cost (less walking/physical effort).
     energy_human = 0.2 + 0.6 * travel_effort_human
 
-    # 3. Privacy (basic): higher when human far from POI
+    # 3. Privacy: 1 − travel_effort_human. Higher when POI is near human (meet close
+    #    to home = more private); lower when meeting far from human's location.
     privacy = 1.0 - travel_effort_human
 
     # 4. Time-to-Meet: min steps for both to arrive = max(travel_effort_agent, travel_effort_human)
@@ -56,7 +58,7 @@ def cost_function(
     w_privacy: float = 0.20,
     w_time_to_meet: float = 0.20,
 ) -> float:
-    """Compute cost for one POI. Lower = better. Includes Travel Effort (agent, human), energy, privacy, Time-to-Meet."""
+    """Compute cost for one POI. Lower = better. Includes Travel Effort, energy (human effort), privacy (near human), Time-to-Meet."""
     comps = cost_components(poi, agent_pos, human_pos, grid_size)
     return sum(w * c for w, c in zip((w_travel_effort_agent, w_travel_effort_human, w_energy, w_privacy, w_time_to_meet), comps))
 

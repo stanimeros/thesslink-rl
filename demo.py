@@ -210,7 +210,7 @@ def run_with_movement(
             lines.append(f"  P{i+1} {poi}: cost={cost:.3f} (Travel Effort A={te_a:.2f} H={te_h:.2f} energy={e:.2f} privacy={p:.2f} Time-to-Meet={ttm:.2f}){marker}")
         print(f"\n--- Scenario {scenario} ---")
         print(f"H: {human_pos}  A: {agent_pos}  POIs: {pois}")
-        print("Per POI: cost (Travel Effort A/H, energy, privacy, Time-to-Meet) - lower=better:")
+        print("Per POI: cost (Travel Effort A/H, energy expenditure, privacy, Time-to-Meet) - lower=better:")
         print("\n".join(lines))
         print(f"Suggested: P{suggested_idx+1} {suggested_poi}")
 
