@@ -17,7 +17,7 @@ import lbforaging  # pyright: ignore[reportMissingImports]
 import numpy as np
 import pyglet
 
-from cost_function import cost_components, cost_function, load_weights, rank_pois, suggest_poi
+from cost_function import suggest_poi_by_steps, steps_to_both_arrive
 from lbforaging.foraging.environment import Action, ForagingEnv  # pyright: ignore[reportMissingImports]
 from lbforaging.foraging.rendering import Viewer  # pyright: ignore[reportMissingImports]
 
@@ -61,7 +61,6 @@ def run_episode(
     agent_pos: tuple[int, int],
     pois: list[tuple[int, int]],
     suggested_poi: tuple[int, int],
-    weights: tuple[float, float, float, float],
 ) -> bool:
     """Run one episode. Returns True if completed, False if window closed."""
     rows, cols = grid_size
@@ -81,12 +80,9 @@ def run_episode(
     lbf._gen_valid_moves()
 
     # Build labels and set draw_badge BEFORE first render so labels are correct immediately
-    poi_costs = {
-        poi: cost_function(poi, agent_pos, human_pos, grid_size, *weights)
-        for poi in pois
-    }
+    poi_values = {poi: steps_to_both_arrive(poi, agent_pos, human_pos) for poi in pois}
     poi_to_label = {
-        poi: f"P{i+1}" + ("*" if poi == suggested_poi else "") + f" {poi_costs[poi]:.2f}"
+        poi: f"P{i+1}" + ("*" if poi == suggested_poi else "") + f" {poi_values[poi]} steps"
         for i, poi in enumerate(pois)
     }
 
@@ -199,25 +195,23 @@ def run_with_movement(
         positions = sample_positions(grid_size, 5, rng.randint(0, 2**31 - 1))
         human_pos, agent_pos = positions[0], positions[1]
         pois = positions[2:5]
-        weights = load_weights()
-        suggested_idx = suggest_poi(pois, agent_pos, human_pos, weights=weights, grid_size=grid_size)
+        from train_rl import suggest_poi_rl
+        suggested_idx = suggest_poi_rl(pois, agent_pos, human_pos, grid_size=grid_size)
         suggested_poi = pois[suggested_idx]
 
-        cost_lines = []
+        step_lines = []
         for i, poi in enumerate(pois):
-            cost = cost_function(poi, agent_pos, human_pos, grid_size, *weights)
-            d_a, d_h, e, p = cost_components(poi, agent_pos, human_pos, grid_size)
+            s = steps_to_both_arrive(poi, agent_pos, human_pos)
             marker = " *" if poi == suggested_poi else ""
-            cost_lines.append(f"  P{i+1} {poi}: cost={cost:.4f} (d_a={d_a:.3f} d_h={d_h:.3f} e={e:.3f} p={p:.3f}){marker}")
-
+            step_lines.append(f"  P{i+1} {poi}: {s} steps{marker}")
         print(f"\n--- Scenario {scenario} ---")
         print(f"H: {human_pos}  A: {agent_pos}  POIs: {pois}")
-        print("Costs (lower=better):")
-        print("\n".join(cost_lines))
+        print("Steps (lower=better, direct path):")
+        print("\n".join(step_lines))
         print(f"Suggested: P{suggested_idx+1} {suggested_poi}")
 
         completed = run_episode(
-            env, lbf, viewer, grid_size, human_pos, agent_pos, pois, suggested_poi, weights
+            env, lbf, viewer, grid_size, human_pos, agent_pos, pois, suggested_poi,
         )
         if not completed:
             break
@@ -244,13 +238,13 @@ def main():
             positions = sample_positions(grid_size, 5, rng.randint(0, 2**31 - 1))
             human_pos, agent_pos = positions[0], positions[1]
             pois = positions[2:5]
-            ranked = rank_pois(pois, agent_pos, human_pos, grid_size)
-            suggested_idx = suggest_poi(pois, agent_pos, human_pos, grid_size=grid_size)
+            from train_rl import suggest_poi_rl
+            suggested_idx = suggest_poi_rl(pois, agent_pos, human_pos, grid_size=grid_size)
             suggested_poi = pois[suggested_idx]
             print(f"Scenario {s+1}: H={human_pos} A={agent_pos} POIs={pois} -> P{suggested_idx+1} {suggested_poi}")
         print("\nRun without --no-visualize to see movement.")
     else:
-        print(f"Running {n_scenarios if n_scenarios > 0 else 'infinite'} scenarios. Close window to exit.")
+        print(f"Running {n_scenarios if n_scenarios > 0 else 'infinite'} scenarios (RL/steps). Close window to exit.")
         run_with_movement(grid_size, n_scenarios, rng)
 
 

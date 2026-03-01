@@ -1,13 +1,9 @@
 """
-Cost/Reward function for POI suggestion ranking.
+Cost components and POI suggestion helpers.
 
-Components: (1) agent distance, (2) human distance, (3) human energy (20–80%), (4) privacy
-Run as script to train and save weights. run_thesslink_demo.py loads saved weights.
-
-  python cost_function.py              # Train 1000 iters, save weights + plot
-  python cost_function.py --no-train   # Just load existing weights (for testing)
+- suggest_poi_by_steps: picks POI that minimizes steps for both to arrive (no gradient descent)
+- cost_components, cost_function: used for observation features and optional cost-based ranking
 """
-import argparse
 import json
 import os
 from pathlib import Path
@@ -16,10 +12,6 @@ from typing import Tuple, List
 import numpy as np
 
 WEIGHTS_FILE = Path(__file__).parent / "thesslink_weights.json"
-PLOT_FILE = Path(__file__).parent / "cost_training_plot.png"
-
-# Minimum weight bounds so all components stay in play
-MIN_WEIGHTS = np.array([0.01, 0.10, 0.15, 0.15])  # d_agent, d_human, energy, privacy
 
 
 def manhattan_distance(pos_a: Tuple[int, int], pos_b: Tuple[int, int]) -> float:
@@ -85,6 +77,28 @@ def rank_pois(
     return [(i + 1, poi, c) for i, (c, poi) in enumerate(costs)]
 
 
+def steps_to_both_arrive(
+    poi: Tuple[int, int],
+    agent_pos: Tuple[int, int],
+    human_pos: Tuple[int, int],
+) -> int:
+    """Steps for both to reach POI (Manhattan). Returns max(d_agent, d_human) - no circles."""
+    return max(
+        manhattan_distance(agent_pos, poi),
+        manhattan_distance(human_pos, poi),
+    )
+
+
+def suggest_poi_by_steps(
+    pois: List[Tuple[int, int]],
+    agent_pos: Tuple[int, int],
+    human_pos: Tuple[int, int],
+) -> int:
+    """Return index of POI that minimizes steps for both to arrive. Direct paths, no circles."""
+    steps = [steps_to_both_arrive(p, agent_pos, human_pos) for p in pois]
+    return int(np.argmin(steps))
+
+
 def suggest_poi(
     pois: List[Tuple[int, int]],
     agent_pos: Tuple[int, int],
@@ -92,7 +106,7 @@ def suggest_poi(
     weights: Tuple[float, float, float, float] | None = None,
     grid_size: Tuple[int, int] = (64, 64),
 ) -> int:
-    """Return index of best POI. Uses saved weights if weights=None."""
+    """Return index of best POI by cost (legacy, uses saved weights). Prefer suggest_poi_by_steps."""
     w = load_weights() if weights is None else weights
     costs = [
         sum(wi * c for wi, c in zip(w, cost_components(p, agent_pos, human_pos, grid_size)))
@@ -129,96 +143,3 @@ def load_weights(path: Path | str = WEIGHTS_FILE) -> Tuple[float, float, float, 
     return (w_d / 2, w_d / 2, w_e, w_p)
 
 
-def train_and_save(
-    n_iterations: int = 1000,
-    lr: float = 0.02,
-    grid_size: tuple[int, int] = (64, 64),
-    seed: int | None = 42,
-    log_every: int = 100,
-    output_path: Path | str = WEIGHTS_FILE,
-    plot_path: Path | str = PLOT_FILE,
-) -> Tuple[float, float, float, float]:
-    """Train weights via gradient descent, save to file, and generate plot."""
-    import matplotlib.pyplot as plt
-
-    rng = np.random.default_rng(seed)
-    rows, cols = grid_size
-    cells = [(r, c) for r in range(rows) for c in range(cols)]
-    weights = np.array([0.25, 0.25, 0.25, 0.25], dtype=np.float64)
-
-    history_cost = []
-    history_weights = np.zeros((n_iterations, 4))
-
-    for i in range(n_iterations):
-        chosen = rng.choice(len(cells), size=5, replace=False)
-        positions = [cells[j] for j in chosen]
-        human_pos, agent_pos = positions[0], positions[1]
-        pois = positions[2:5]
-
-        suggested = suggest_poi(pois, agent_pos, human_pos, tuple(weights), grid_size)
-        comps = cost_components(pois[suggested], agent_pos, human_pos, grid_size)
-        grad = np.array(comps, dtype=np.float64)
-        cost = cost_function(pois[suggested], agent_pos, human_pos, grid_size, *weights)
-
-        weights = weights - lr * grad
-        weights = np.maximum(weights, MIN_WEIGHTS)
-        weights = weights / weights.sum()
-
-        history_cost.append(cost)
-        history_weights[i] = weights
-
-        if (i + 1) % log_every == 0:
-            print(
-                f"iter {i+1:5d} | cost={cost:.4f} | w=[d_a:{weights[0]:.3f} d_h:{weights[1]:.3f} e:{weights[2]:.3f} p:{weights[3]:.3f}]"
-            )
-
-    w_tuple = (float(weights[0]), float(weights[1]), float(weights[2]), float(weights[3]))
-    save_weights(w_tuple, output_path)
-    print(f"Saved weights to {output_path}")
-
-    # Generate plot
-    if plot_path is None:
-        return w_tuple
-
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
-    iters = np.arange(1, n_iterations + 1)
-    ax1.plot(iters, history_cost, color="tab:blue", linewidth=0.8, alpha=0.9)
-    ax1.set_ylabel("Cost")
-    ax1.set_title("Cost Function Training")
-    ax1.grid(True, alpha=0.3)
-
-    ax2.plot(iters, history_weights[:, 0], label="d_agent", linewidth=0.8, alpha=0.9)
-    ax2.plot(iters, history_weights[:, 1], label="d_human", linewidth=0.8, alpha=0.9)
-    ax2.plot(iters, history_weights[:, 2], label="energy", linewidth=0.8, alpha=0.9)
-    ax2.plot(iters, history_weights[:, 3], label="privacy", linewidth=0.8, alpha=0.9)
-    ax2.set_xlabel("Iteration")
-    ax2.set_ylabel("Weight")
-    ax2.set_title("Weights over Training")
-    ax2.legend(loc="upper right", ncol=4)
-    ax2.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig(str(plot_path), dpi=150, bbox_inches="tight")
-    plt.close()
-    print(f"Saved plot to {plot_path}")
-    return w_tuple
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--no-train", action="store_true", help="Skip training, just show current weights")
-    parser.add_argument("--iterations", type=int, default=1000, help="Training iterations (default: 1000)")
-    parser.add_argument("--lr", type=float, default=0.02)
-    parser.add_argument("--no-plot", action="store_true", help="Skip generating plot")
-    args = parser.parse_args()
-
-    if args.no_train:
-        w = load_weights()
-        print(f"Loaded weights: d_agent={w[0]:.3f}, d_human={w[1]:.3f}, energy={w[2]:.3f}, privacy={w[3]:.3f}")
-    else:
-        print("Training cost function weights...")
-        train_and_save(
-            n_iterations=args.iterations,
-            lr=args.lr,
-            plot_path=None if args.no_plot else PLOT_FILE,
-        )

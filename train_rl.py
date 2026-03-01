@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""
+Train POI suggestion policy with Reinforcement Learning (PPO).
+
+  python train_rl.py                    # Train 50k steps, save model
+  python train_rl.py --steps 100000      # More training
+  python train_rl.py --reward steps      # Use steps-based reward instead of cost
+  python train_rl.py --no-train         # Just evaluate loaded model
+"""
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import gymnasium as gym
+import numpy as np
+from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
+
+from cost_function import suggest_poi_by_steps
+from poi_env import PoISuggestionEnv
+
+MODEL_DIR = Path(__file__).parent / "models"
+MODEL_PATH = MODEL_DIR / "ppo_poi_suggestion"
+PLOT_FILE = Path(__file__).parent / "rl_training_plot.png"
+_best_model_path = MODEL_DIR / "best_model"
+
+
+class PlottingCallback(BaseCallback):
+    """Log eval reward and agreement with cost baseline for training plot."""
+
+    def __init__(
+        self,
+        eval_freq: int,
+        n_eval_episodes: int = 100,
+        reward_type: str = "cost",
+        plot_path: Path | str | None = None,
+        verbose: int = 0,
+    ):
+        super().__init__(verbose)
+        self.eval_freq = eval_freq
+        self.n_eval_episodes = n_eval_episodes
+        self.reward_type = reward_type
+        self.plot_path = Path(plot_path) if plot_path else None
+        self.reward_history: list[float] = []
+        self.agreement_history: list[float] = []
+        self.step_history: list[int] = []
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps > 0 and self.num_timesteps % self.eval_freq == 0:
+            eval_env = PoISuggestionEnv(grid_size=(8, 8), reward_type=self.reward_type)
+            # Eval mean reward
+            rewards = []
+            for _ in range(self.n_eval_episodes):
+                obs, _ = eval_env.reset()
+                done = False
+                while not done:
+                    action, _ = self.model.predict(obs, deterministic=True)
+                    obs, reward, term, trunc, _ = eval_env.step(int(action))
+                    done = term or trunc
+                    rewards.append(reward)
+            mean_reward = float(np.mean(rewards))
+            self.reward_history.append(mean_reward)
+            self.step_history.append(self.num_timesteps)
+
+            # Agreement with suggest_poi_by_steps baseline
+            agreements = 0
+            for _ in range(self.n_eval_episodes):
+                obs, _ = eval_env.reset()
+                rl_action = int(self.model.predict(obs, deterministic=True)[0])
+                human_pos = eval_env._human_pos
+                agent_pos = eval_env._agent_pos
+                pois = eval_env._pois
+                baseline_action = suggest_poi_by_steps(pois, agent_pos, human_pos)
+                agreements += 1 if rl_action == baseline_action else 0
+            self.agreement_history.append(agreements / self.n_eval_episodes)
+        return True
+
+    def _on_training_end(self) -> None:
+        if not self.plot_path or not self.reward_history:
+            return
+        import matplotlib.pyplot as plt
+
+        fig, axes = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
+        steps = self.step_history
+
+        axes[0].plot(steps, self.reward_history, color="tab:blue", linewidth=0.8, alpha=0.9, marker="o", markersize=3)
+        axes[0].set_ylabel("Mean Reward")
+        axes[0].set_title("RL Training (PPO)")
+        axes[0].grid(True, alpha=0.3)
+
+        if self.agreement_history:
+            axes[1].plot(steps, self.agreement_history, color="tab:blue", linewidth=0.8, alpha=0.9, marker="o", markersize=3)
+            axes[1].set_ylabel("Agreement with suggest_poi_by_steps")
+            axes[1].set_ylim(0, 1.05)
+        else:
+            axes[1].plot(steps, self.reward_history, color="tab:blue", linewidth=0.8, alpha=0.9)
+            axes[1].set_ylabel("Mean Reward")
+        axes[1].set_xlabel("Timesteps")
+        axes[1].set_title("Agreement with suggest_poi_by_steps" if self.agreement_history else "Mean Reward")
+        axes[1].grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(str(self.plot_path), dpi=150, bbox_inches="tight")
+        plt.close()
+        if self.verbose:
+            print(f"Saved training plot to {self.plot_path}")
+
+
+def suggest_poi_rl(
+    pois: list[tuple[int, int]],
+    agent_pos: tuple[int, int],
+    human_pos: tuple[int, int],
+    grid_size: tuple[int, int] = (8, 8),
+    model_path: Path | str | None = None,
+) -> int:
+    """
+    Use trained RL policy to suggest POI. Returns index 0, 1, or 2.
+    Falls back to cost-based suggest_poi if model not found.
+    """
+    if model_path is not None:
+        path = Path(model_path)
+        if not path.suffix:
+            path = Path(f"{path}.zip")
+    else:
+        for candidate in (_best_model_path, MODEL_PATH):
+            p = Path(f"{candidate}.zip") if not str(candidate).endswith(".zip") else Path(candidate)
+            if p.exists():
+                path = p
+                break
+        else:
+            return suggest_poi_by_steps(pois, agent_pos, human_pos)
+
+    from poi_env import build_observation
+
+    model = PPO.load(str(path))
+    obs = build_observation(human_pos, agent_pos, pois, grid_size)
+    action, _ = model.predict(obs, deterministic=True)
+    return int(action)
+
+
+def make_env(
+    grid_size: tuple[int, int] = (8, 8),
+    reward_type: str = "cost",
+    seed: int | None = None,
+) -> PoISuggestionEnv:
+    return PoISuggestionEnv(grid_size=grid_size, reward_type=reward_type, seed=seed)
+
+
+def register_env(reward_type: str = "cost"):
+    if "PoISuggestion-v0" in gym.envs.registry:
+        gym.envs.registry.pop("PoISuggestion-v0", None)
+    gym.register(
+        id="PoISuggestion-v0",
+        entry_point="poi_env:PoISuggestionEnv",
+        kwargs={"grid_size": (8, 8), "reward_type": reward_type},
+    )
+
+
+def train(
+    total_timesteps: int = 50_000,
+    reward_type: str = "cost",
+    seed: int = 42,
+    eval_freq: int = 5000,
+    save_path: Path | str = MODEL_PATH,
+    plot_path: Path | str | None = PLOT_FILE,
+) -> PPO:
+    register_env(reward_type)
+    env = gym.make("PoISuggestion-v0")
+    eval_env = gym.make("PoISuggestion-v0")
+
+    MODEL_DIR.mkdir(exist_ok=True)
+    callbacks = [
+        EvalCallback(
+            eval_env,
+            best_model_save_path=str(MODEL_DIR),
+            log_path=str(MODEL_DIR),
+            eval_freq=eval_freq,
+            deterministic=True,
+            render=False,
+        ),
+    ]
+    if plot_path:
+        # Use smaller eval_freq for plot (more data points); min 500 to avoid too many evals
+        plot_eval_freq = min(eval_freq, max(500, total_timesteps // 20))
+        callbacks.append(
+            PlottingCallback(
+                eval_freq=plot_eval_freq,
+                n_eval_episodes=50,
+                reward_type=reward_type,
+                plot_path=plot_path,
+                verbose=1,
+            )
+        )
+
+    model = PPO(
+        "MlpPolicy",
+        env,
+        learning_rate=3e-4,
+        n_steps=64,
+        batch_size=64,
+        n_epochs=10,
+        gamma=0.99,
+        verbose=1,
+        seed=seed,
+    )
+    model.learn(total_timesteps=total_timesteps, callback=callbacks)
+    model.save(str(save_path))
+    print(f"Saved model to {save_path}")
+    env.close()
+    eval_env.close()
+    gym.envs.registry.pop("PoISuggestion-v0", None)
+    return model
+
+
+def evaluate_vs_baseline(
+    model: PPO,
+    n_episodes: int = 500,
+    grid_size: tuple[int, int] = (8, 8),
+    reward_type: str = "steps",
+) -> dict:
+    """Compare RL policy vs suggest_poi_by_steps. Returns agreement rate."""
+    env = PoISuggestionEnv(grid_size=grid_size, reward_type=reward_type, seed=42)
+    agreements = 0
+    total = 0
+
+    for _ in range(n_episodes):
+        obs, _ = env.reset()
+        rl_action, _ = model.predict(obs, deterministic=True)
+        rl_action = int(rl_action)
+
+        human_pos = env._human_pos
+        agent_pos = env._agent_pos
+        pois = env._pois
+        baseline_action = suggest_poi_by_steps(pois, agent_pos, human_pos)
+
+        if rl_action == baseline_action:
+            agreements += 1
+        total += 1
+
+    return {"agreement": agreements / total, "agreements": agreements, "total": total}
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--steps", type=int, default=50_000, help="Training timesteps")
+    parser.add_argument("--reward", choices=["cost", "steps"], default="steps")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--no-train", action="store_true", help="Skip training, evaluate only")
+    parser.add_argument("--no-plot", action="store_true", help="Skip generating rl_training_plot.png")
+    parser.add_argument("--eval-episodes", type=int, default=500)
+    args = parser.parse_args()
+
+    if args.no_train:
+        model_path = MODEL_PATH
+        if not Path(f"{model_path}.zip").exists():
+            print(f"Model not found at {model_path}.zip. Run without --no-train first.")
+            return
+        model = PPO.load(str(model_path))
+        print("Evaluating RL policy vs suggest_poi_by_steps...")
+        stats = evaluate_vs_baseline(model, n_episodes=args.eval_episodes, reward_type=args.reward)
+        print(f"Agreement: {stats['agreement']:.1%} ({stats['agreements']}/{stats['total']})")
+        return
+
+    print("Training POI suggestion policy with PPO...")
+    print(f"  reward_type={args.reward}, steps={args.steps}")
+    model = train(
+        total_timesteps=args.steps,
+        reward_type=args.reward,
+        seed=args.seed,
+        plot_path=None if args.no_plot else PLOT_FILE,
+    )
+    print("\nEvaluating vs suggest_poi_by_steps baseline...")
+    stats = evaluate_vs_baseline(model, n_episodes=args.eval_episodes, reward_type=args.reward)
+    print(f"Agreement with suggest_poi_by_steps: {stats['agreement']:.1%}")
+
+
+if __name__ == "__main__":
+    main()
