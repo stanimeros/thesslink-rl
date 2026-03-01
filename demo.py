@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-ThessLink: Multiple scenarios. Cost-based POI suggestion, lb-foraging shows H and A movement.
+ThessLink: Multiple scenarios. RL-based POI suggestion (3 POIs), lb-foraging shows H and A movement.
 
 Usage:
-  python demo.py                    # 5 scenarios, 5 POIs
-  python demo.py --scenarios 10 --pois 7
+  python demo.py                    # 5 scenarios, 3 POIs (RL model)
+  python demo.py --scenarios 10
   python demo.py --scenarios 0      # Infinite until window closed
   python demo.py --no-visualize
-  python demo.py --pois 3           # 3 POIs (matches RL training)
 """
 import argparse
 import random
@@ -25,8 +24,9 @@ from lbforaging.foraging.rendering import Viewer  # pyright: ignore[reportMissin
 parser = argparse.ArgumentParser()
 parser.add_argument("--no-visualize", action="store_true", help="Skip lb-foraging window")
 parser.add_argument("--scenarios", type=int, default=5, help="Scenarios to run (0=infinite until window closed)")
-parser.add_argument("--pois", type=int, default=5, help="Number of POIs per scenario")
 args = parser.parse_args()
+
+N_POIS = 3
 
 
 def sample_positions(grid_size: tuple[int, int], n: int, seed: int | None = None) -> list[tuple[int, int]]:
@@ -198,11 +198,11 @@ def run_episode(
 def run_with_movement(
     grid_size: tuple[int, int],
     n_scenarios: int,
-    n_pois: int,
     rng: random.Random,
 ):
     """Run multiple scenarios. After each episode completes, start next."""
-    env_id = "Foraging-64x64-2p-10f-v3" if n_pois > 3 else "Foraging-64x64-2p-3f-v3"
+    n_pois = N_POIS
+    env_id = "Foraging-64x64-2p-3f-v3"
     env = gym.make(
         env_id,
         render_mode="human",
@@ -221,7 +221,7 @@ def run_with_movement(
     viewer.height = 1 + viewer.rows * (viewer.grid_size + 1)
     viewer.window.set_size(viewer.width, viewer.height)
 
-    from cost_function import pick_best_poi
+    from train import suggest_poi_rl
 
     scenario = 0
     while viewer.isopen:
@@ -232,7 +232,7 @@ def run_with_movement(
         positions = sample_positions(grid_size, n_positions, rng.randint(0, 2**31 - 1))
         human_pos, agent_pos = positions[0], positions[1]
         pois = positions[2:n_positions]
-        suggested_idx = pick_best_poi(pois, agent_pos, human_pos, grid_size=grid_size)
+        suggested_idx = suggest_poi_rl(pois, agent_pos, human_pos, grid_size=grid_size)
         suggested_poi = pois[suggested_idx]
 
         weights = DEFAULT_WEIGHTS
@@ -265,22 +265,21 @@ def main():
     grid_size = (64, 64)
     rng = random.Random(42)
     n_scenarios = args.scenarios
-    n_pois = max(2, min(args.pois, 10))  # clamp 2–10 for demo
 
     print("=" * 50)
-    print("ThessLink: Multiple scenarios")
+    print("ThessLink: Multiple scenarios (RL model, 3 POIs)")
     print("=" * 50)
 
     if args.no_visualize:
         n_show = min(n_scenarios, 5) if n_scenarios > 0 else 5
         weights = DEFAULT_WEIGHTS
+        from train import suggest_poi_rl
         for s in range(n_show):
-            n_positions = 2 + n_pois
+            n_positions = 2 + N_POIS
             positions = sample_positions(grid_size, n_positions, rng.randint(0, 2**31 - 1))
             human_pos, agent_pos = positions[0], positions[1]
             pois = positions[2:n_positions]
-            from cost_function import pick_best_poi
-            suggested_idx = pick_best_poi(pois, agent_pos, human_pos, grid_size=grid_size)
+            suggested_idx = suggest_poi_rl(pois, agent_pos, human_pos, grid_size=grid_size)
             suggested_poi = pois[suggested_idx]
             lines = []
             for i, poi in enumerate(pois):
@@ -292,8 +291,8 @@ def main():
             print(f"  -> P{suggested_idx+1} {suggested_poi}")
         print("\nRun without --no-visualize to see movement.")
     else:
-        print(f"Running {n_scenarios if n_scenarios > 0 else 'infinite'} scenarios, {n_pois} POIs. Close window to exit.")
-        run_with_movement(grid_size, n_scenarios, n_pois, rng)
+        print(f"Running {n_scenarios if n_scenarios > 0 else 'infinite'} scenarios, {N_POIS} POIs (RL model). Close window to exit.")
+        run_with_movement(grid_size, n_scenarios, rng)
 
 
 if __name__ == "__main__":
