@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-ThessLink: Cost function suggests best meeting POI. lb-foraging shows H and A movement.
+ThessLink: Multiple scenarios. Cost function suggests POI, lb-foraging shows H and A movement.
 
 Usage:
-  python run_thesslink_demo.py              # lb-foraging window: agents move to suggested POI
-  python run_thesslink_demo.py --no-visualize  # Skip window
+  python run_thesslink_demo.py                 # 5 scenarios
+  python run_thesslink_demo.py --scenarios 10
+  python run_thesslink_demo.py --scenarios 0   # Infinite until window closed
+  python run_thesslink_demo.py --no-visualize
 """
 import argparse
 import math
@@ -23,6 +25,7 @@ from lbforaging.foraging.rendering import Viewer
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--no-visualize", action="store_true", help="Skip lb-foraging window")
+parser.add_argument("--scenarios", type=int, default=5, help="Scenarios to run (0=infinite until window closed)")
 args = parser.parse_args()
 
 
@@ -51,41 +54,30 @@ def step_toward(pos: tuple[int, int], target: tuple[int, int]) -> Action:
     return Action.NONE
 
 
-def run_with_movement(
+def run_episode(
+    env: gym.Env,
+    lbf: ForagingEnv,
+    viewer: Viewer,
     grid_size: tuple[int, int],
     human_pos: tuple[int, int],
     agent_pos: tuple[int, int],
     pois: list[tuple[int, int]],
     suggested_poi: tuple[int, int],
-):
-    """Use lb-foraging to show H and A moving toward suggested POI."""
+) -> bool:
+    """Run one episode. Returns True if completed, False if window closed."""
     rows, cols = grid_size
 
-    # Create env with 2 players, 3 food (all 3 POIs)
-    env = gym.make(
-        "Foraging-8x8-2p-3f-v3",
-        render_mode="human",
-    )
-    env.reset(seed=42)
-    lbf = env.unwrapped
-    assert isinstance(lbf, ForagingEnv)
-
-    # Override: H and A at our positions, 3 food at all POIs (suggested=2, others=1)
+    # Set state: H and A at positions, 3 food at POIs
     lbf.field = np.zeros((rows, cols), dtype=np.int32)  # type: ignore[assignment]
     for i, poi in enumerate(pois):
-        level = 2 if poi == suggested_poi else 1  # suggested=2 (P*), others=1 (P1,P2,P3)
+        level = 2 if poi == suggested_poi else 1
         lbf.field[poi[0], poi[1]] = level
     lbf.players[0].position = list(human_pos)
     lbf.players[1].position = list(agent_pos)
-    lbf.players[0].level = 1  # H
-    lbf.players[1].level = 2  # A
+    lbf.players[0].level = 1
+    lbf.players[1].level = 2
     lbf._gen_valid_moves()
 
-    lbf._init_render()
-    viewer = lbf.viewer
-    assert viewer is not None
-
-    # Replace badge labels: H, A, P1/P2/P3 (suggested=*)
     poi_to_label = {poi: f"P{i+1}" + ("*" if poi == suggested_poi else "") for i, poi in enumerate(pois)}
 
     def draw_badge_h_a(row: int, col: int, level: int):
@@ -123,65 +115,83 @@ def run_with_movement(
 
     viewer._draw_badge = draw_badge_h_a
 
-    done = False
-    step_count = 0
-    max_steps = 100
+    def adjacent(p: tuple[int, int], t: tuple[int, int]) -> bool:
+        return abs(p[0] - t[0]) + abs(p[1] - t[1]) == 1
 
-    while viewer.isopen and not done and step_count < max_steps:
-        # Move both toward suggested POI
+    for _ in range(100):
+        if not viewer.isopen:
+            return False
         h_pos = (int(lbf.players[0].position[0]), int(lbf.players[0].position[1]))
         a_pos = (int(lbf.players[1].position[0]), int(lbf.players[1].position[1]))
         act_h = step_toward(h_pos, suggested_poi)
         act_a = step_toward(a_pos, suggested_poi)
-
-        actions = [int(act_h.value), int(act_a.value)]
-        obs, rewards, done, truncated, info = env.step(actions)
-        step_count += 1
-
+        obs, rewards, done, truncated, info = env.step([int(act_h.value), int(act_a.value)])
         env.render()
         time.sleep(0.3)
-
-        # Both adjacent to POI (agents can't stand on food cell)
-        def adjacent(p, t):
-            return abs(p[0] - t[0]) + abs(p[1] - t[1]) == 1
         if adjacent(h_pos, suggested_poi) and adjacent(a_pos, suggested_poi):
-            done = True
+            return True
+    return True
+
+
+def run_with_movement(
+    grid_size: tuple[int, int],
+    n_scenarios: int,
+    rng: random.Random,
+):
+    """Run multiple scenarios. After each episode completes, start next."""
+    env = gym.make("Foraging-8x8-2p-3f-v3", render_mode="human")
+    env.reset(seed=42)
+    lbf = env.unwrapped
+    assert isinstance(lbf, ForagingEnv)
+    lbf._init_render()
+    viewer = lbf.viewer
+    assert isinstance(viewer, Viewer)
+
+    scenario = 0
+    while viewer.isopen:
+        if n_scenarios > 0 and scenario >= n_scenarios:
+            break
+        scenario += 1
+        positions = sample_positions(grid_size, 5, rng.randint(0, 2**31 - 1))
+        human_pos, agent_pos = positions[0], positions[1]
+        pois = positions[2:5]
+        suggested_idx = suggest_poi(pois, agent_pos, human_pos, grid_size=grid_size)
+        suggested_poi = pois[suggested_idx]
+
+        print(f"\n--- Scenario {scenario} ---")
+        print(f"H: {human_pos}  A: {agent_pos}  POIs: {pois}  Suggested: P{suggested_idx+1} {suggested_poi}")
+
+        completed = run_episode(env, lbf, viewer, grid_size, human_pos, agent_pos, pois, suggested_poi)
+        if not completed:
+            break
+        time.sleep(0.5)  # Brief pause between scenarios
 
     env.close()
 
 
 def main():
     grid_size = (8, 8)
-    seed = 42
-
-    # Random human, agent, 3 POIs
-    positions = sample_positions(grid_size, 5, seed)
-    human_pos = positions[0]
-    agent_pos = positions[1]
-    pois = positions[2:5]
-
-    # Cost function suggests best POI
-    ranked = rank_pois(pois, agent_pos, human_pos, grid_size)
-    suggested_idx = suggest_poi(pois, agent_pos, human_pos, grid_size=grid_size)
-    suggested_poi = pois[suggested_idx]
+    rng = random.Random(42)
+    n_scenarios = args.scenarios
 
     print("=" * 50)
-    print("ThessLink: Cost function suggests meeting point")
+    print("ThessLink: Multiple scenarios")
     print("=" * 50)
-    print(f"H (human): {human_pos}")
-    print(f"A (agent): {agent_pos}")
-    print(f"POIs: P1={pois[0]}, P2={pois[1]}, P3={pois[2]}")
-    print("Ranked (by cost, lower=better):")
-    for rank, poi, cost in ranked:
-        mark = " <- suggested" if poi == suggested_poi else ""
-        print(f"  #{rank}: {poi} cost={cost:.4f}{mark}")
-    print(f"Suggested meeting point: P{suggested_idx + 1} {suggested_poi}")
 
-    if not args.no_visualize:
-        print("\nlb-foraging: H and A move toward P* (suggested). P1, P2, P3 = ignored. Close window to exit.")
-        run_with_movement(grid_size, human_pos, agent_pos, pois, suggested_poi)
-    else:
+    if args.no_visualize:
+        n_show = min(n_scenarios, 5) if n_scenarios > 0 else 5
+        for s in range(n_show):
+            positions = sample_positions(grid_size, 5, rng.randint(0, 2**31 - 1))
+            human_pos, agent_pos = positions[0], positions[1]
+            pois = positions[2:5]
+            ranked = rank_pois(pois, agent_pos, human_pos, grid_size)
+            suggested_idx = suggest_poi(pois, agent_pos, human_pos, grid_size=grid_size)
+            suggested_poi = pois[suggested_idx]
+            print(f"Scenario {s+1}: H={human_pos} A={agent_pos} POIs={pois} -> P{suggested_idx+1} {suggested_poi}")
         print("\nRun without --no-visualize to see movement.")
+    else:
+        print(f"Running {n_scenarios if n_scenarios > 0 else 'infinite'} scenarios. Close window to exit.")
+        run_with_movement(grid_size, n_scenarios, rng)
 
 
 if __name__ == "__main__":

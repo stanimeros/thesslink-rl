@@ -34,8 +34,10 @@ python cost_function.py --iterations 1000   # Custom iterations
 Loads weights from `thesslink_weights.json` (creates defaults if missing).
 
 ```bash
-python run_thesslink_demo.py               # lb-foraging: H and A move toward suggested POI (P)
-python run_thesslink_demo.py --no-visualize  # Skip window
+python run_thesslink_demo.py               # 5 scenarios, lb-foraging window
+python run_thesslink_demo.py --scenarios 10   # 10 scenarios
+python run_thesslink_demo.py --scenarios 0    # Infinite (until window closed)
+python run_thesslink_demo.py --no-visualize   # Skip window
 ```
 
 ## Project structure
