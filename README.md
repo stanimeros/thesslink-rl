@@ -54,8 +54,12 @@ thesslink-rl/
 ## Cost function
 
 ```
-cost = w_distance × (agent→POI) + w_privacy × (1 - human→POI) + w_energy × (agent→POI)
+cost = w_d_agent×d_agent + w_d_human×d_human + w_energy×energy_human + w_privacy×privacy
 ```
+
+- **d_agent, d_human**: Manhattan distances (agent→POI, human→POI), normalized
+- **energy_human**: 0.2 + 0.6×d_human (humans want min energy but not 0; range 20–80%)
+- **privacy**: 1 − d_human (basic: higher when human far from POI)
 
 Lower cost = better suggestion. Weights sum to 1 and are non-negative.
 

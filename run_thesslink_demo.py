@@ -61,7 +61,7 @@ def run_episode(
     agent_pos: tuple[int, int],
     pois: list[tuple[int, int]],
     suggested_poi: tuple[int, int],
-    weights: tuple[float, float, float],
+    weights: tuple[float, float, float, float],
 ) -> bool:
     """Run one episode. Returns True if completed, False if window closed."""
     rows, cols = grid_size
@@ -206,9 +206,9 @@ def run_with_movement(
         cost_lines = []
         for i, poi in enumerate(pois):
             cost = cost_function(poi, agent_pos, human_pos, grid_size, *weights)
-            d, p, e = cost_components(poi, agent_pos, human_pos, grid_size)
+            d_a, d_h, e, p = cost_components(poi, agent_pos, human_pos, grid_size)
             marker = " *" if poi == suggested_poi else ""
-            cost_lines.append(f"  P{i+1} {poi}: cost={cost:.4f} (d={d:.3f} p={p:.3f} e={e:.3f}){marker}")
+            cost_lines.append(f"  P{i+1} {poi}: cost={cost:.4f} (d_a={d_a:.3f} d_h={d_h:.3f} e={e:.3f} p={p:.3f}){marker}")
 
         print(f"\n--- Scenario {scenario} ---")
         print(f"H: {human_pos}  A: {agent_pos}  POIs: {pois}")
