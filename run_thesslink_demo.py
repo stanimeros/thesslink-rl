@@ -19,7 +19,7 @@ import numpy as np
 import pyglet
 from pyglet.gl import GL_LINE_LOOP, GL_POLYGON, glColor3ub
 
-from cost_function import rank_pois, suggest_poi
+from cost_function import cost_components, cost_function, load_weights, rank_pois, suggest_poi
 from lbforaging.foraging.environment import Action, ForagingEnv
 from lbforaging.foraging.rendering import Viewer
 
@@ -63,22 +63,36 @@ def run_episode(
     agent_pos: tuple[int, int],
     pois: list[tuple[int, int]],
     suggested_poi: tuple[int, int],
+    weights: tuple[float, float, float],
 ) -> bool:
     """Run one episode. Returns True if completed, False if window closed."""
     rows, cols = grid_size
+
+    lbf.current_step = 0
+    lbf._game_over = False
 
     # Set state: H and A at positions, 3 food at POIs
     lbf.field = np.zeros((rows, cols), dtype=np.int32)  # type: ignore[assignment]
     for i, poi in enumerate(pois):
         level = 2 if poi == suggested_poi else 1
         lbf.field[poi[0], poi[1]] = level
-    lbf.players[0].position = list(human_pos)
-    lbf.players[1].position = list(agent_pos)
+    lbf.players[0].position = tuple(human_pos)
+    lbf.players[1].position = tuple(agent_pos)
     lbf.players[0].level = 1
     lbf.players[1].level = 2
     lbf._gen_valid_moves()
 
-    poi_to_label = {poi: f"P{i+1}" + ("*" if poi == suggested_poi else "") for i, poi in enumerate(pois)}
+    env.render()
+    time.sleep(1.0)
+
+    poi_costs = {
+        poi: cost_function(poi, agent_pos, human_pos, grid_size, *weights)
+        for poi in pois
+    }
+    poi_to_label = {
+        poi: f"P{i+1}" + ("*" if poi == suggested_poi else "") + f" {poi_costs[poi]:.2f}"
+        for i, poi in enumerate(pois)
+    }
 
     def draw_badge_h_a(row: int, col: int, level: int):
         if (row, col) in poi_to_label:
@@ -90,7 +104,7 @@ def run_episode(
         else:
             label = str(level)
         resolution = 6
-        radius = viewer.grid_size / 5
+        radius = viewer.grid_size / 7
         badge_x = int(col * (viewer.grid_size + 1) + (3 / 4) * (viewer.grid_size + 1))
         badge_y = int(viewer.height - (viewer.grid_size + 1) * (row + 1) + (1 / 4) * (viewer.grid_size + 1))
         verts = []
@@ -104,7 +118,7 @@ def run_episode(
         circle.draw(GL_LINE_LOOP)
         pyglet.text.Label(
             label,
-            font_size=12,
+            font_size=8,
             bold=True,
             x=badge_x,
             y=badge_y + 2,
@@ -115,21 +129,43 @@ def run_episode(
 
     viewer._draw_badge = draw_badge_h_a
 
-    def adjacent(p: tuple[int, int], t: tuple[int, int]) -> bool:
-        return abs(p[0] - t[0]) + abs(p[1] - t[1]) == 1
+    def at_or_adjacent(p: tuple[int, int], t: tuple[int, int]) -> bool:
+        """True if p is on t or one step away (Manhattan)."""
+        return abs(p[0] - t[0]) + abs(p[1] - t[1]) <= 1
 
+    steps_with_both_adjacent = 0
     for _ in range(100):
         if not viewer.isopen:
             return False
         h_pos = (int(lbf.players[0].position[0]), int(lbf.players[0].position[1]))
         a_pos = (int(lbf.players[1].position[0]), int(lbf.players[1].position[1]))
-        act_h = step_toward(h_pos, suggested_poi)
-        act_a = step_toward(a_pos, suggested_poi)
+        both_adjacent_not_on = (
+            at_or_adjacent(h_pos, suggested_poi)
+            and at_or_adjacent(a_pos, suggested_poi)
+            and h_pos != suggested_poi
+            and a_pos != suggested_poi
+        )
+        if both_adjacent_not_on:
+            act_h = step_toward(h_pos, suggested_poi)
+            act_a = Action.NONE
+        else:
+            act_h = step_toward(h_pos, suggested_poi)
+            act_a = step_toward(a_pos, suggested_poi)
         obs, rewards, done, truncated, info = env.step([int(act_h.value), int(act_a.value)])
         env.render()
-        time.sleep(0.3)
-        if adjacent(h_pos, suggested_poi) and adjacent(a_pos, suggested_poi):
+        time.sleep(0.15)
+        h_pos = (int(lbf.players[0].position[0]), int(lbf.players[0].position[1]))
+        a_pos = (int(lbf.players[1].position[0]), int(lbf.players[1].position[1]))
+        both_on_poi = (h_pos == suggested_poi) and (a_pos == suggested_poi)
+        if both_on_poi:
             return True
+        both_reached = at_or_adjacent(h_pos, suggested_poi) and at_or_adjacent(a_pos, suggested_poi)
+        if both_reached:
+            steps_with_both_adjacent += 1
+            if steps_with_both_adjacent >= 5:
+                return True
+        else:
+            steps_with_both_adjacent = 0
     return True
 
 
@@ -139,7 +175,12 @@ def run_with_movement(
     rng: random.Random,
 ):
     """Run multiple scenarios. After each episode completes, start next."""
-    env = gym.make("Foraging-8x8-2p-3f-v3", render_mode="human")
+    env = gym.make(
+        "Foraging-8x8-2p-3f-v3",
+        render_mode="human",
+        allow_agent_on_food=True,
+        allow_agent_on_agent=True,
+    )
     env.reset(seed=42)
     lbf = env.unwrapped
     assert isinstance(lbf, ForagingEnv)
@@ -155,15 +196,31 @@ def run_with_movement(
         positions = sample_positions(grid_size, 5, rng.randint(0, 2**31 - 1))
         human_pos, agent_pos = positions[0], positions[1]
         pois = positions[2:5]
-        suggested_idx = suggest_poi(pois, agent_pos, human_pos, grid_size=grid_size)
+        weights = load_weights()
+        suggested_idx = suggest_poi(pois, agent_pos, human_pos, weights=weights, grid_size=grid_size)
         suggested_poi = pois[suggested_idx]
 
-        print(f"\n--- Scenario {scenario} ---")
-        print(f"H: {human_pos}  A: {agent_pos}  POIs: {pois}  Suggested: P{suggested_idx+1} {suggested_poi}")
+        cost_lines = []
+        for i, poi in enumerate(pois):
+            cost = cost_function(poi, agent_pos, human_pos, grid_size, *weights)
+            d, p, e = cost_components(poi, agent_pos, human_pos, grid_size)
+            marker = " *" if poi == suggested_poi else ""
+            cost_lines.append(f"  P{i+1} {poi}: cost={cost:.4f} (d={d:.3f} p={p:.3f} e={e:.3f}){marker}")
 
-        completed = run_episode(env, lbf, viewer, grid_size, human_pos, agent_pos, pois, suggested_poi)
+        print(f"\n--- Scenario {scenario} ---")
+        print(f"H: {human_pos}  A: {agent_pos}  POIs: {pois}")
+        print("Costs (lower=better):")
+        print("\n".join(cost_lines))
+        print(f"Suggested: P{suggested_idx+1} {suggested_poi}")
+
+        completed = run_episode(
+            env, lbf, viewer, grid_size, human_pos, agent_pos, pois, suggested_poi, weights
+        )
         if not completed:
             break
+        for _ in range(5):
+            env.render()
+            time.sleep(0.1)
         time.sleep(0.5)  # Brief pause between scenarios
 
     env.close()
