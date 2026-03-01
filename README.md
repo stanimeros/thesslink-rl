@@ -8,6 +8,7 @@ Cost/reward function for meeting point suggestion. The agent suggests the best P
 - **Output:** Agent suggests the best meeting point (lowest cost)
 - **Factors:** Distance (agent→POI), Privacy (human→POI), Energy (effort)
 - **Weights:** Learned via gradient descent in `train_weights.py`
+- **Visualization:** Custom grid with H, A, P1, P2, P3 (no lb-foraging icons)
 
 ## Setup
 
@@ -31,15 +32,11 @@ Weights (distance, privacy, energy) are updated each iteration to minimize cost 
 ### Run demo
 
 ```bash
-python run_thesslink_demo.py               # Cost function + lb-foraging window (default)
+python run_thesslink_demo.py               # lb-foraging: H and A move toward suggested POI (P)
 python run_thesslink_demo.py --no-visualize  # Skip window
 ```
 
-### Visualize with lb-foraging
-
-```bash
-python lb-foraging/human_play.py --env Foraging-8x8-2p-2f-v3
-```
+Uses **lb-foraging** to visualize movement: **H** (human) and **A** (agent) move toward the suggested meeting point **P** (from cost function).
 
 ## Project structure
 
@@ -47,8 +44,8 @@ python lb-foraging/human_play.py --env Foraging-8x8-2p-2f-v3
 thesslink-rl/
 ├── cost_function.py    # Cost function, rank_pois, suggest_poi
 ├── train_weights.py    # Train weights through iterations
-├── run_thesslink_demo.py
-├── lb-foraging/        # Visualization & evaluation (from semitable/lb-foraging)
+├── run_thesslink_demo.py   # Grid: H, A, P1, P2, P3 + cost-based suggestion
+├── lb-foraging/        # Optional (from semitable/lb-foraging)
 └── requirements.txt
 ```
 
