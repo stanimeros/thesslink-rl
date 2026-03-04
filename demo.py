@@ -3,7 +3,10 @@
 ThessLink: Multiple scenarios. RL-based POI suggestion (3 POIs), lb-foraging shows H and A movement.
 
 Usage:
-  python demo.py                    # 5 scenarios, 3 POIs (RL model)
+  python demo.py                    # 5 scenarios, PPO model (default)
+  python demo.py --model ppo        # Policy-based (PPO)
+  python demo.py --model dqn        # Value-based (DQN)
+  python demo.py --model cost       # Cost baseline (no RL)
   python demo.py --scenarios 10
   python demo.py --scenarios 0      # Infinite until window closed
   python demo.py --no-visualize
@@ -17,16 +20,32 @@ import lbforaging  # pyright: ignore[reportMissingImports]
 import numpy as np
 import pyglet
 
-from cost_function import cost_function, cost_components, DEFAULT_WEIGHTS
+from cost_function import cost_function, cost_components, DEFAULT_WEIGHTS, pick_best_poi
 from lbforaging.foraging.environment import Action, ForagingEnv  # pyright: ignore[reportMissingImports]
 from lbforaging.foraging.rendering import Viewer  # pyright: ignore[reportMissingImports]
 
 parser = argparse.ArgumentParser()
+parser.add_argument("--model", choices=["ppo", "dqn", "cost"], default="ppo", help="Model for POI suggestion (default: ppo)")
 parser.add_argument("--no-visualize", action="store_true", help="Skip lb-foraging window")
 parser.add_argument("--scenarios", type=int, default=5, help="Scenarios to run (0=infinite until window closed)")
 args = parser.parse_args()
 
 N_POIS = 3
+
+
+def get_suggestor(model: str):
+    """Return suggest function for given model: ppo, dqn, or cost."""
+    if model == "cost":
+        return lambda pois, agent_pos, human_pos, grid_size=(64, 64): pick_best_poi(
+            pois, agent_pos, human_pos, grid_size=grid_size
+        )
+    if model == "ppo":
+        from policy_based_train import suggest_poi_rl
+        return suggest_poi_rl
+    if model == "dqn":
+        from value_based_train import suggest_poi_dqn
+        return suggest_poi_dqn
+    raise ValueError(f"Unknown model: {model}")
 
 
 def sample_positions(grid_size: tuple[int, int], n: int, seed: int | None = None) -> list[tuple[int, int]]:
@@ -199,6 +218,7 @@ def run_with_movement(
     grid_size: tuple[int, int],
     n_scenarios: int,
     rng: random.Random,
+    suggest_poi,
 ):
     """Run multiple scenarios. After each episode completes, start next."""
     n_pois = N_POIS
@@ -221,8 +241,6 @@ def run_with_movement(
     viewer.height = 1 + viewer.rows * (viewer.grid_size + 1)
     viewer.window.set_size(viewer.width, viewer.height)
 
-    from train import suggest_poi_rl
-
     scenario = 0
     while viewer.isopen:
         if n_scenarios > 0 and scenario >= n_scenarios:
@@ -232,7 +250,7 @@ def run_with_movement(
         positions = sample_positions(grid_size, n_positions, rng.randint(0, 2**31 - 1))
         human_pos, agent_pos = positions[0], positions[1]
         pois = positions[2:n_positions]
-        suggested_idx = suggest_poi_rl(pois, agent_pos, human_pos, grid_size=grid_size)
+        suggested_idx = suggest_poi(pois, agent_pos, human_pos, grid_size=grid_size)
         suggested_poi = pois[suggested_idx]
 
         weights = DEFAULT_WEIGHTS
@@ -261,25 +279,30 @@ def run_with_movement(
     env.close()
 
 
+def _run_with_movement(grid_size, n_scenarios, rng):
+    suggest_poi = get_suggestor(args.model)
+    run_with_movement(grid_size, n_scenarios, rng, suggest_poi)
+
+
 def main():
     grid_size = (64, 64)
     rng = random.Random(42)
     n_scenarios = args.scenarios
 
     print("=" * 50)
-    print("ThessLink: Multiple scenarios (RL model, 3 POIs)")
+    print(f"ThessLink: Multiple scenarios (model={args.model}, 3 POIs)")
     print("=" * 50)
 
     if args.no_visualize:
         n_show = min(n_scenarios, 5) if n_scenarios > 0 else 5
         weights = DEFAULT_WEIGHTS
-        from train import suggest_poi_rl
+        suggest_poi = get_suggestor(args.model)
         for s in range(n_show):
             n_positions = 2 + N_POIS
             positions = sample_positions(grid_size, n_positions, rng.randint(0, 2**31 - 1))
             human_pos, agent_pos = positions[0], positions[1]
             pois = positions[2:n_positions]
-            suggested_idx = suggest_poi_rl(pois, agent_pos, human_pos, grid_size=grid_size)
+            suggested_idx = suggest_poi(pois, agent_pos, human_pos, grid_size=grid_size)
             suggested_poi = pois[suggested_idx]
             lines = []
             for i, poi in enumerate(pois):
@@ -291,8 +314,8 @@ def main():
             print(f"  -> P{suggested_idx+1} {suggested_poi}")
         print("\nRun without --no-visualize to see movement.")
     else:
-        print(f"Running {n_scenarios if n_scenarios > 0 else 'infinite'} scenarios, {N_POIS} POIs (RL model). Close window to exit.")
-        run_with_movement(grid_size, n_scenarios, rng)
+        print(f"Running {n_scenarios if n_scenarios > 0 else 'infinite'} scenarios, {N_POIS} POIs (model={args.model}). Close window to exit.")
+        _run_with_movement(grid_size, n_scenarios, rng)
 
 
 if __name__ == "__main__":

@@ -20,9 +20,10 @@ from cost_function import pick_best_poi
 from poi_environment import PoISuggestionEnv
 
 MODEL_DIR = Path(__file__).parent / "models"
-MODEL_PATH = MODEL_DIR / "dqn_poi_suggestion"
-DQN_BEST_DIR = MODEL_DIR / "dqn"
+DQN_DIR = MODEL_DIR / "dqn"
+MODEL_PATH = DQN_DIR / "dqn_poi_suggestion"
 PLOT_FILE = Path(__file__).parent / "training_plot_dqn.png"
+_best_model_path = DQN_DIR / "best_model"
 
 
 class PlottingCallback(BaseCallback):
@@ -122,7 +123,7 @@ def suggest_poi_dqn(
         if not path.suffix:
             path = Path(f"{path}.zip")
     else:
-        for candidate in (DQN_BEST_DIR / "best_model", MODEL_PATH):
+        for candidate in (_best_model_path, MODEL_PATH):
             p = Path(f"{candidate}.zip") if not str(candidate).endswith(".zip") else Path(candidate)
             if p.exists():
                 path = p
@@ -161,13 +162,13 @@ def train(
     eval_env = gym.make("PoISuggestion-v0")
 
     MODEL_DIR.mkdir(exist_ok=True)
-    DQN_BEST_DIR.mkdir(exist_ok=True)
+    DQN_DIR.mkdir(exist_ok=True)
 
     callbacks = [
         EvalCallback(
             eval_env,
-            best_model_save_path=str(DQN_BEST_DIR),
-            log_path=str(DQN_BEST_DIR),
+            best_model_save_path=str(DQN_DIR),
+            log_path=str(DQN_DIR),
             eval_freq=eval_freq,
             deterministic=True,
             render=False,
@@ -241,10 +242,12 @@ def main():
     args = parser.parse_args()
 
     if args.no_train:
-        if not MODEL_PATH.with_suffix(".zip").exists() and not (DQN_BEST_DIR / "best_model.zip").exists():
+        best_zip = _best_model_path.with_suffix(".zip")
+        model_zip = MODEL_PATH.with_suffix(".zip")
+        if not model_zip.exists() and not best_zip.exists():
             print(f"Model not found. Run without --no-train first.")
             return
-        path = DQN_BEST_DIR / "best_model.zip" if (DQN_BEST_DIR / "best_model.zip").exists() else MODEL_PATH
+        path = best_zip if best_zip.exists() else model_zip
         model = DQN.load(str(path))
         print("Evaluating DQN vs cost baseline...")
         stats = evaluate_vs_baseline(model, n_episodes=args.eval_episodes)

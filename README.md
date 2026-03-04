@@ -24,16 +24,16 @@ pip install -r requirements.txt
 
 ## Usage
 
-### 1. Train RL policy (`train.py`)
+### 1. Train policy-based model (`policy_based_train.py`)
 
 ```bash
-python train.py                    # Train PPO 50k steps (cost reward), save to models/
-python train.py --steps 100000     # More training
-python train.py --no-plot          # Skip generating training_plot_ppo.png
-python train.py --no-train         # Evaluate loaded model vs cost baseline
+python policy_based_train.py              # Train PPO 50k steps (cost reward), save to models/
+python policy_based_train.py --steps 100000
+python policy_based_train.py --no-plot   # Skip generating training_plot_ppo.png
+python policy_based_train.py --no-train  # Evaluate loaded model vs cost baseline
 ```
 
-Produces `models/best_model.zip`, `models/ppo_poi_suggestion.zip`, and `training_plot_ppo.png`.
+Produces `models/ppo/best_model.zip`, `models/ppo/ppo_poi_suggestion.zip`, and `training_plot_ppo.png`.
 
 ![Training plot](training_plot_ppo.png)
 
@@ -48,18 +48,21 @@ python value_based_train.py --no-plot   # Skip plot
 python value_based_train.py --no-train  # Evaluate only
 ```
 
-Produces `models/dqn/best_model.zip`, `models/dqn_poi_suggestion.zip`, and `training_plot_dqn.png`. Use `suggest_poi_dqn()` for inference.
+Produces `models/dqn/best_model.zip`, `models/dqn/dqn_poi_suggestion.zip`, and `training_plot_dqn.png`. Use `suggest_poi_dqn()` for inference.
 
 ![DQN training plot](training_plot_dqn.png)
 
 ### 3. Run demo (`demo.py`)
 
-Uses cost-based POI suggestion. Shows **cost** per POI with color-coded labels (green=optimal, blue=less, red=worst).
+Shows **cost** per POI with color-coded labels (green=optimal, blue=less, red=worst). Choose which model to use for POI suggestion.
 
 ```bash
-python demo.py                    # 5 scenarios, 3 POIs
+python demo.py                         # 5 scenarios, PPO model (default)
+python demo.py --model ppo             # Policy-based (PPO)
+python demo.py --model dqn             # Value-based (DQN)
+python demo.py --model cost            # Cost baseline (no RL)
 python demo.py --scenarios 10
-python demo.py --scenarios 0      # Infinite (until window closed)
+python demo.py --scenarios 0           # Infinite until window closed
 python demo.py --no-visualize
 ```
 
@@ -67,14 +70,17 @@ python demo.py --no-visualize
 
 ```
 thesslink-rl/
-├── cost_function.py       # cost_components, cost_function, pick_best_poi
-├── poi_environment.py     # Gymnasium env for POI suggestion (RL)
-├── train.py              # PPO training (policy-based), suggest_poi_rl()
-├── value_based_train.py  # DQN training (value-based), suggest_poi_dqn()
-├── demo.py               # Demo with cost display
-├── models/               # RL models (ppo, dqn)
-├── training_plot_ppo.png   # RL training plot
-├── lb-foraging/        # lb-foraging env (visualization)
+├── cost_function.py        # cost_components, cost_function, pick_best_poi
+├── poi_environment.py      # Gymnasium env for POI suggestion (RL)
+├── policy_based_train.py   # PPO training (policy-based), suggest_poi_rl()
+├── value_based_train.py    # DQN training (value-based), suggest_poi_dqn()
+├── demo.py                 # Demo with cost display (--model ppo|dqn|cost)
+├── models/                 # RL models
+│   ├── ppo/                # PPO: best_model.zip, ppo_poi_suggestion.zip
+│   └── dqn/                # DQN: best_model.zip, dqn_poi_suggestion.zip
+├── training_plot_ppo.png   # PPO training plot
+├── training_plot_dqn.png   # DQN training plot
+├── lb-foraging/            # lb-foraging env (visualization)
 ├── requirements.txt
 └── README.md
 ```
@@ -122,9 +128,9 @@ Default weights: $w_{TE_a} = w_{TE_h} = w_e = w_p = w_{TTM} = 0.20$.
 
 ## Flow
 
-1. **train.py** – Train policy-based (PPO) → `models/best_model.zip`
-2. **value_based_train.py** – Train value-based (DQN) → `models/dqn/best_model.zip`
-3. **demo.py** – Load RL model → suggest POI → visualize
+1. **policy_based_train.py** – Train policy-based (PPO) → `models/ppo/`
+2. **value_based_train.py** – Train value-based (DQN) → `models/dqn/`
+3. **demo.py** – Load model (--model ppo|dqn|cost) → suggest POI → visualize
 
 ## License
 

@@ -20,9 +20,10 @@ from cost_function import pick_best_poi
 from poi_environment import PoISuggestionEnv
 
 MODEL_DIR = Path(__file__).parent / "models"
-MODEL_PATH = MODEL_DIR / "ppo_poi_suggestion"
+PPO_DIR = MODEL_DIR / "ppo"
+MODEL_PATH = PPO_DIR / "ppo_poi_suggestion"
 PLOT_FILE = Path(__file__).parent / "training_plot_ppo.png"
-_best_model_path = MODEL_DIR / "best_model"
+_best_model_path = PPO_DIR / "best_model"
 
 
 class PlottingCallback(BaseCallback):
@@ -161,11 +162,12 @@ def train(
     eval_env = gym.make("PoISuggestion-v0")
 
     MODEL_DIR.mkdir(exist_ok=True)
+    PPO_DIR.mkdir(exist_ok=True)
     callbacks = [
         EvalCallback(
             eval_env,
-            best_model_save_path=str(MODEL_DIR),
-            log_path=str(MODEL_DIR),
+            best_model_save_path=str(PPO_DIR),
+            log_path=str(PPO_DIR),
             eval_freq=eval_freq,
             deterministic=True,
             render=False,
