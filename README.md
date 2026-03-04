@@ -95,7 +95,7 @@ Default weights: $w_{TE_a} = w_{TE_h} = w_e = w_p = w_{TTM} = 0.20$.
 - **User preferences:** Learn or adapt weights per user (e.g., preference-based RL).
 - **SOC vs. Makespan:** Sum-of-costs (total effort) vs. makespan (time until both meet)—already partially captured by TTM.
 - **Privacy variants:** Crowd exposure, anonymity, distance from home.
-- **Energy variants:** Terrain, elevation, accessibility (e.g., wheelchair).
+- **Energy variants:** Terrain, elevation, vehicle type (e.g., drone, robot taxi, pedestrian).
 - **Negotiation:** Alternating offers, Pareto-optimal compromise between human and agent preferences.
 
 ## Reinforcement Learning
