@@ -63,7 +63,9 @@ thesslink-rl/
 └── README.md
 ```
 
-## Cost formula
+## Cost formula (current)
+
+The current cost function combines distance, energy, privacy, and time-to-meet. Lower cost = better POI suggestion.
 
 ### Main cost
 
@@ -84,7 +86,17 @@ $$\text{cost} = w_{TE_a} \cdot d_A + w_{TE_h} \cdot d_H + w_e \cdot e + w_p \cdo
 
 $$\text{cost} = w_{TE_a} \cdot d_A + w_{TE_h} \cdot d_H + w_e \cdot (0.2 + 0.6 d_H) + w_p \cdot (1 - d_H) + w_{TTM} \cdot \max(d_A, d_H)$$
 
-Lower cost = better suggestion. Default weights: $w_{TE_a} = w_{TE_h} = w_e = w_p = w_{TTM} = 0.20$.
+Default weights: $w_{TE_a} = w_{TE_h} = w_e = w_p = w_{TTM} = 0.20$.
+
+### Related improvements / ideas
+
+- **Fairness (minimax):** Minimize max effort instead of sum—balance burden between human and agent.
+- **A* paths:** Replace Manhattan with actual path length when obstacles exist.
+- **User preferences:** Learn or adapt weights per user (e.g., preference-based RL).
+- **SOC vs. Makespan:** Sum-of-costs (total effort) vs. makespan (time until both meet)—already partially captured by TTM.
+- **Privacy variants:** Crowd exposure, anonymity, distance from home.
+- **Energy variants:** Terrain, elevation, accessibility (e.g., wheelchair).
+- **Negotiation:** Alternating offers, Pareto-optimal compromise between human and agent preferences.
 
 ## Reinforcement Learning
 
