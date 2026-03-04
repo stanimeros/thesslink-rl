@@ -42,11 +42,10 @@ Produces `models/best_model.zip`, `models/ppo_poi_suggestion.zip`, and `training
 Uses cost-based POI suggestion. Shows **cost** per POI with color-coded labels (green=optimal, blue=less, red=worst).
 
 ```bash
-python demo.py                    # 5 scenarios, 5 POIs
-python demo.py --scenarios 10 --pois 7
+python demo.py                    # 5 scenarios, 3 POIs
+python demo.py --scenarios 10
 python demo.py --scenarios 0      # Infinite (until window closed)
 python demo.py --no-visualize
-python demo.py --pois 3           # 3 POIs
 ```
 
 ## Project structure
