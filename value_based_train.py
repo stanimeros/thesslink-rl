@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Train POI suggestion policy with Reinforcement Learning (PPO).
+Train POI suggestion with value-based RL (DQN).
 
-  python train.py                    # Train 50k timesteps, save model
-  python train.py --steps 100000      # More training
-  python train.py --no-train          # Just evaluate loaded model
+  python value_based_train.py              # Train 50k timesteps, save model
+  python value_based_train.py --steps 100000
+  python value_based_train.py --no-train   # Just evaluate loaded model
 """
 from __future__ import annotations
 
@@ -13,16 +13,16 @@ from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
-from stable_baselines3 import PPO
+from stable_baselines3 import DQN
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 
 from cost_function import pick_best_poi
 from poi_environment import PoISuggestionEnv
 
 MODEL_DIR = Path(__file__).parent / "models"
-MODEL_PATH = MODEL_DIR / "ppo_poi_suggestion"
-PLOT_FILE = Path(__file__).parent / "training_plot.png"
-_best_model_path = MODEL_DIR / "best_model"
+MODEL_PATH = MODEL_DIR / "dqn_poi_suggestion"
+DQN_BEST_DIR = MODEL_DIR / "dqn"
+PLOT_FILE = Path(__file__).parent / "training_plot_dqn.png"
 
 
 class PlottingCallback(BaseCallback):
@@ -81,17 +81,17 @@ class PlottingCallback(BaseCallback):
         fig, axes = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
         steps = self.step_history
 
-        axes[0].plot(steps, self.reward_history, color="tab:blue", linewidth=0.8, alpha=0.9, marker="o", markersize=3)
+        axes[0].plot(steps, self.reward_history, color="tab:green", linewidth=0.8, alpha=0.9, marker="o", markersize=3)
         axes[0].set_ylabel("Mean Reward")
-        axes[0].set_title("RL Training (PPO)")
+        axes[0].set_title("RL Training (DQN)")
         axes[0].grid(True, alpha=0.3)
 
         if self.agreement_history:
-            axes[1].plot(steps, self.agreement_history, color="tab:blue", linewidth=0.8, alpha=0.9, marker="o", markersize=3)
+            axes[1].plot(steps, self.agreement_history, color="tab:green", linewidth=0.8, alpha=0.9, marker="o", markersize=3)
             axes[1].set_ylabel("Agreement with pick_best_poi")
             axes[1].set_ylim(0, 1.05)
         else:
-            axes[1].plot(steps, self.reward_history, color="tab:blue", linewidth=0.8, alpha=0.9)
+            axes[1].plot(steps, self.reward_history, color="tab:green", linewidth=0.8, alpha=0.9)
             axes[1].set_ylabel("Mean Reward")
         axes[1].set_xlabel("Timesteps")
         axes[1].set_title("Agreement with pick_best_poi" if self.agreement_history else "Mean Reward")
@@ -104,7 +104,7 @@ class PlottingCallback(BaseCallback):
             print(f"Saved training plot to {self.plot_path}")
 
 
-def suggest_poi_rl(
+def suggest_poi_dqn(
     pois: list[tuple[int, int]],
     agent_pos: tuple[int, int],
     human_pos: tuple[int, int],
@@ -112,7 +112,7 @@ def suggest_poi_rl(
     model_path: Path | str | None = None,
 ) -> int:
     """
-    Use trained RL policy to suggest POI. Returns index 0, 1, or 2.
+    Use trained DQN to suggest POI. Returns index 0, 1, or 2.
     Exits with message if model not found.
     """
     import sys
@@ -122,18 +122,18 @@ def suggest_poi_rl(
         if not path.suffix:
             path = Path(f"{path}.zip")
     else:
-        for candidate in (_best_model_path, MODEL_PATH):
+        for candidate in (DQN_BEST_DIR / "best_model", MODEL_PATH):
             p = Path(f"{candidate}.zip") if not str(candidate).endswith(".zip") else Path(candidate)
             if p.exists():
                 path = p
                 break
         else:
-            print("Model not found. Run train.py first to train the RL policy.")
+            print("Model not found. Run value_based_train.py first to train the DQN.")
             sys.exit(1)
 
     from poi_environment import build_observation
 
-    model = PPO.load(str(path))
+    model = DQN.load(str(path))
     obs = build_observation(human_pos, agent_pos, pois, grid_size)
     action, _ = model.predict(obs, deterministic=True)
     return int(action)
@@ -155,24 +155,25 @@ def train(
     eval_freq: int = 5000,
     save_path: Path | str = MODEL_PATH,
     plot_path: Path | str | None = PLOT_FILE,
-) -> PPO:
+) -> DQN:
     register_env()
     env = gym.make("PoISuggestion-v0")
     eval_env = gym.make("PoISuggestion-v0")
 
     MODEL_DIR.mkdir(exist_ok=True)
+    DQN_BEST_DIR.mkdir(exist_ok=True)
+
     callbacks = [
         EvalCallback(
             eval_env,
-            best_model_save_path=str(MODEL_DIR),
-            log_path=str(MODEL_DIR),
+            best_model_save_path=str(DQN_BEST_DIR),
+            log_path=str(DQN_BEST_DIR),
             eval_freq=eval_freq,
             deterministic=True,
             render=False,
         ),
     ]
     if plot_path:
-        # Use smaller eval_freq for plot (more data points); min 500 to avoid too many evals
         plot_eval_freq = min(eval_freq, max(500, total_timesteps // 20))
         callbacks.append(
             PlottingCallback(
@@ -183,13 +184,13 @@ def train(
             )
         )
 
-    model = PPO(
+    model = DQN(
         "MlpPolicy",
         env,
-        learning_rate=3e-4,
-        n_steps=64,
+        learning_rate=1e-4,
+        buffer_size=50_000,
+        learning_starts=1000,
         batch_size=64,
-        n_epochs=10,
         gamma=0.99,
         verbose=1,
         seed=seed,
@@ -204,11 +205,11 @@ def train(
 
 
 def evaluate_vs_baseline(
-    model: PPO,
+    model: DQN,
     n_episodes: int = 500,
     grid_size: tuple[int, int] = (64, 64),
 ) -> dict:
-    """Compare RL policy vs cost-based pick_best_poi. Returns agreement rate."""
+    """Compare DQN vs cost-based pick_best_poi. Returns agreement rate."""
     env = PoISuggestionEnv(grid_size=grid_size, seed=42)
     agreements = 0
     total = 0
@@ -235,22 +236,22 @@ def main():
     parser.add_argument("--steps", type=int, default=50_000, help="Training timesteps")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no-train", action="store_true", help="Skip training, evaluate only")
-    parser.add_argument("--no-plot", action="store_true", help="Skip generating training_plot.png")
+    parser.add_argument("--no-plot", action="store_true", help="Skip generating training_plot_dqn.png")
     parser.add_argument("--eval-episodes", type=int, default=500)
     args = parser.parse_args()
 
     if args.no_train:
-        model_path = MODEL_PATH
-        if not Path(f"{model_path}.zip").exists():
-            print(f"Model not found at {model_path}.zip. Run without --no-train first.")
+        if not MODEL_PATH.with_suffix(".zip").exists() and not (DQN_BEST_DIR / "best_model.zip").exists():
+            print(f"Model not found. Run without --no-train first.")
             return
-        model = PPO.load(str(model_path))
-        print("Evaluating RL policy vs cost baseline...")
+        path = DQN_BEST_DIR / "best_model.zip" if (DQN_BEST_DIR / "best_model.zip").exists() else MODEL_PATH
+        model = DQN.load(str(path))
+        print("Evaluating DQN vs cost baseline...")
         stats = evaluate_vs_baseline(model, n_episodes=args.eval_episodes)
         print(f"Agreement: {stats['agreement']:.1%} ({stats['agreements']}/{stats['total']})")
         return
 
-    print("Training POI suggestion policy with PPO (cost reward)...")
+    print("Training POI suggestion with DQN (value-based, cost reward)...")
     print(f"  steps={args.steps}")
     model = train(
         total_timesteps=args.steps,

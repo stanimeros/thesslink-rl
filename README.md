@@ -29,15 +29,30 @@ pip install -r requirements.txt
 ```bash
 python train.py                    # Train PPO 50k steps (cost reward), save to models/
 python train.py --steps 100000     # More training
-python train.py --no-plot          # Skip generating training_plot.png
+python train.py --no-plot          # Skip generating training_plot_ppo.png
 python train.py --no-train         # Evaluate loaded model vs cost baseline
 ```
 
-Produces `models/best_model.zip`, `models/ppo_poi_suggestion.zip`, and `training_plot.png`.
+Produces `models/best_model.zip`, `models/ppo_poi_suggestion.zip`, and `training_plot_ppo.png`.
 
-![Training plot](training_plot.png)
+![Training plot](training_plot_ppo.png)
 
-### 2. Run demo (`demo.py`)
+### 2. Train value-based model (`value_based_train.py`)
+
+DQN (value-based RL) for POI suggestion. Same env and reward; outputs Q-values per action.
+
+```bash
+python value_based_train.py              # Train DQN 50k steps, save training_plot_dqn.png
+python value_based_train.py --steps 100000
+python value_based_train.py --no-plot   # Skip plot
+python value_based_train.py --no-train  # Evaluate only
+```
+
+Produces `models/dqn/best_model.zip`, `models/dqn_poi_suggestion.zip`, and `training_plot_dqn.png`. Use `suggest_poi_dqn()` for inference.
+
+![DQN training plot](training_plot_dqn.png)
+
+### 3. Run demo (`demo.py`)
 
 Uses cost-based POI suggestion. Shows **cost** per POI with color-coded labels (green=optimal, blue=less, red=worst).
 
@@ -52,12 +67,13 @@ python demo.py --no-visualize
 
 ```
 thesslink-rl/
-├── cost_function.py    # cost_components, cost_function, pick_best_poi
-├── poi_environment.py  # Gymnasium env for POI suggestion (RL)
-├── train.py            # PPO training, suggest_poi_rl()
-├── demo.py             # Demo with cost display
-├── models/              # RL models (best_model.zip, ppo_poi_suggestion.zip)
-├── training_plot.png   # RL training plot
+├── cost_function.py       # cost_components, cost_function, pick_best_poi
+├── poi_environment.py     # Gymnasium env for POI suggestion (RL)
+├── train.py              # PPO training (policy-based), suggest_poi_rl()
+├── value_based_train.py  # DQN training (value-based), suggest_poi_dqn()
+├── demo.py               # Demo with cost display
+├── models/               # RL models (ppo, dqn)
+├── training_plot_ppo.png   # RL training plot
 ├── lb-foraging/        # lb-foraging env (visualization)
 ├── requirements.txt
 └── README.md
@@ -102,12 +118,13 @@ Default weights: $w_{TE_a} = w_{TE_h} = w_e = w_p = w_{TTM} = 0.20$.
 
 - **State:** Normalized positions + cost components (Travel Effort, energy, privacy, Time-to-Meet) per POI
 - **Action:** Discrete(3) – which POI to suggest
-- **Reward:** `-cost` (default) – minimize cost
+- **Reward:** `-cost` – minimize cost
 
 ## Flow
 
-1. **train.py** – Train RL policy (PPO, cost reward) → `models/best_model.zip`
-2. **demo.py** – Load RL model → suggest POI → visualize
+1. **train.py** – Train policy-based (PPO) → `models/best_model.zip`
+2. **value_based_train.py** – Train value-based (DQN) → `models/dqn/best_model.zip`
+3. **demo.py** – Load RL model → suggest POI → visualize
 
 ## License
 
