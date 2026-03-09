@@ -2,7 +2,7 @@
 
 **Reinforcement Learning** for meeting point suggestion. The model takes **Travel Effort** (agent, human distances), **Time-to-Meet**, **energy** (penalizes human travel—closer POIs cost less), and **privacy** (prefer meeting near human's location), calculates a cost for each POI, and selects the **minimum cost**.
 
-![lb-foraging environment](lb-foraging/docs/img/lbf.gif)
+![lb-foraging environment](example.gif)
 
 ## Overview
 
