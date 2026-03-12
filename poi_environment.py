@@ -57,12 +57,7 @@ def _cost_components_from_maps(
     other_map: dict[tuple[int, int], float],
     max_dist: float,
 ) -> tuple[float, float, float, float, float]:
-    """
-    Compute cost components using pre-built BFS distance maps.
-    self_map  = BFS from self_pos  (distances to all cells, including poi)
-    other_map = BFS from other_pos
-    Returns (travel_effort_self, travel_effort_other, energy, privacy, time_to_meet).
-    """
+    """Compute cost components using pre-built BFS distance maps."""
     dist_s = min(self_map.get(poi, float("inf")), max_dist)
     dist_o = min(other_map.get(poi, float("inf")), max_dist)
     te_s = dist_s / max_dist
@@ -73,29 +68,26 @@ def _cost_components_from_maps(
     return te_s, te_o, energy, privacy, ttm
 
 
-def _build_nav_obs(
+def _build_nav_obs_manhattan(
     self_pos: tuple[int, int],
     other_pos: tuple[int, int],
     pois: list[tuple[int, int]],
-    poi_dist_maps: list[dict[tuple[int, int], float]],
     grid_size: tuple[int, int],
 ) -> np.ndarray:
     """
-    Build 19-float observation using pre-computed BFS distance maps.
-    poi_dist_maps[i] = BFS distances from pois[i] to all cells.
-    dist(self → poi) = poi_dist_maps[i][self_pos]  (same as dist(poi → self) on undirected grid)
+    Build 19-float observation using Manhattan distances (O(1) per POI).
+    Used during training for speed; obstacles affect navigation but not obs features.
     """
     rows, cols = grid_size
     max_dist = float(rows + cols)
     self_norm = np.array([self_pos[0] / (rows - 1), self_pos[1] / (cols - 1)], dtype=np.float32)
     other_norm = np.array([other_pos[0] / (rows - 1), other_pos[1] / (cols - 1)], dtype=np.float32)
     parts = [self_norm, other_norm]
-    for poi_map in poi_dist_maps:
-        # dist(self→poi) and dist(other→poi) from the poi's BFS map
-        dist_s = min(poi_map.get(self_pos, float("inf")), max_dist)
-        dist_o = min(poi_map.get(other_pos, float("inf")), max_dist)
-        te_s = dist_s / max_dist
-        te_o = dist_o / max_dist
+    for poi in pois:
+        dist_s = abs(self_pos[0] - poi[0]) + abs(self_pos[1] - poi[1])
+        dist_o = abs(other_pos[0] - poi[0]) + abs(other_pos[1] - poi[1])
+        te_s = min(dist_s / max_dist, 1.0)
+        te_o = min(dist_o / max_dist, 1.0)
         energy = 0.2 + 0.6 * te_o
         privacy = 1.0 - te_o
         ttm = max(te_s, te_o)
@@ -232,14 +224,7 @@ class PoINavigationEnv(gym.Env):
         occupied = {self._agent1_pos, self._agent2_pos, *self._pois}
         self._obstacles = self._generate_obstacles(occupied)
 
-        # Build BFS maps from each POI (used for cost_components in observation)
-        self._poi_dist_maps = [
-            _bfs_dist_map(poi, self._obstacles, self.rows, self.cols)
-            for poi in self._pois
-        ]
-
-        # Select target POI: argmin weighted cost using BFS distances
-        # Build agent maps once (reused for all 3 POIs)
+        # Select target POI using BFS distances (A*-quality, 2 BFS only)
         max_dist = float(self.rows + self.cols)
         a1_map = _bfs_dist_map(self._agent1_pos, self._obstacles, self.rows, self.cols)
         a2_map = _bfs_dist_map(self._agent2_pos, self._obstacles, self.rows, self.cols)
@@ -253,9 +238,11 @@ class PoINavigationEnv(gym.Env):
                 best_idx = i
         self._target_poi = self._pois[best_idx]
 
-        # Build BFS map from target (used for progress reward — O(1) lookup per step)
+        # Build BFS map from target only (used for O(1) progress reward per step)
         self._target_dist_map = _bfs_dist_map(self._target_poi, self._obstacles, self.rows, self.cols)
 
+        # Pre-compute Manhattan-based POI distances for observation (fast, no BFS)
+        # Obstacles affect navigation but observation uses Manhattan as a proxy
         self._step_count = 0
         self._prev_dist1 = self._target_dist_map.get(self._agent1_pos, float("inf"))
         self._prev_dist2 = self._target_dist_map.get(self._agent2_pos, float("inf"))
@@ -263,19 +250,12 @@ class PoINavigationEnv(gym.Env):
         return self._get_obs(), {}
 
     def _get_obs(self) -> tuple[np.ndarray, np.ndarray]:
-        """Returns (obs_agent1, obs_agent2) using cached BFS maps — O(1) per POI."""
-        # For observation, cost_components(poi, self, other) needs:
-        #   dist(self → poi) = poi_dist_map[self_pos]  (BFS from poi)
-        #   dist(other → poi) = poi_dist_map[other_pos]
-        obs1 = _build_nav_obs(
-            self._agent1_pos, self._agent2_pos,
-            self._pois, self._poi_dist_maps,
-            self.grid_size,
+        """Returns (obs_agent1, obs_agent2) using Manhattan distances — O(1)."""
+        obs1 = _build_nav_obs_manhattan(
+            self._agent1_pos, self._agent2_pos, self._pois, self.grid_size
         )
-        obs2 = _build_nav_obs(
-            self._agent2_pos, self._agent1_pos,
-            self._pois, self._poi_dist_maps,
-            self.grid_size,
+        obs2 = _build_nav_obs_manhattan(
+            self._agent2_pos, self._agent1_pos, self._pois, self.grid_size
         )
         return obs1, obs2
 
