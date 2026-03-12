@@ -20,7 +20,7 @@ import lbforaging  # pyright: ignore[reportMissingImports]
 import numpy as np
 import pyglet
 
-from cost_function import cost_function, cost_components, DEFAULT_WEIGHTS, nearest_human_baseline
+from cost_function import cost_components, nearest_human_baseline
 from lbforaging.foraging.environment import Action, ForagingEnv  # pyright: ignore[reportMissingImports]
 from lbforaging.foraging.rendering import Viewer  # pyright: ignore[reportMissingImports]
 
@@ -73,12 +73,11 @@ def step_toward(pos: tuple[int, int], target: tuple[int, int]) -> Action:
     return Action.NONE
 
 
-# Label colors: optimal=green, middle=blue, worst=red
-COLOR_OPTIMAL = (0, 140, 0, 255)    # green
-COLOR_LESS = (0, 80, 200, 255)     # blue
-COLOR_WORST = (200, 0, 0, 255)     # red
-COLOR_HUMAN = (0, 0, 0, 255)       # black for H
-COLOR_AGENT = (128, 128, 128, 255)  # grey for A
+COLOR_MODEL = (0, 140, 0, 255)      # green: model suggestion
+COLOR_BASELINE = (200, 0, 0, 255)   # red: nearest-human baseline
+COLOR_NEUTRAL = (100, 100, 100, 255) # grey: neither
+COLOR_HUMAN = (0, 0, 0, 255)        # black for H
+COLOR_AGENT = (128, 128, 128, 255)   # grey for A
 
 
 def run_episode(
@@ -90,6 +89,7 @@ def run_episode(
     agent_pos: tuple[int, int],
     pois: list[tuple[int, int]],
     suggested_poi: tuple[int, int],
+    baseline_poi: tuple[int, int],
 ) -> bool:
     """Run one episode. Returns True if completed, False if window closed."""
     rows, cols = grid_size
@@ -108,22 +108,17 @@ def run_episode(
     lbf.players[1].level = 2
     lbf._gen_valid_moves()
 
-    # Build labels with cost and color by scale (tertiles: optimal / medium / worst)
-    weights = DEFAULT_WEIGHTS
-    costs_with_poi = [(cost_function(p, agent_pos, human_pos, grid_size, *weights), p) for p in pois]
-    costs_with_poi.sort(key=lambda x: x[0])
-    costs_arr = np.array([c for c, _ in costs_with_poi])
-    p33 = np.percentile(costs_arr, 33)
-    p67 = np.percentile(costs_arr, 67)
+    # Color: green = model suggestion, red = nearest-human baseline, grey = neither
+    # If model and baseline agree, show green (model wins)
     poi_to_label_and_color: dict[tuple[int, int], tuple[str, tuple[int, int, int, int]]] = {}
-    for cost, poi in costs_with_poi:
-        label = f"P{pois.index(poi)+1} {cost:.2f}"
-        if cost <= p33:
-            color = COLOR_OPTIMAL
-        elif cost <= p67:
-            color = COLOR_LESS
+    for i, poi in enumerate(pois):
+        label = f"P{i+1}"
+        if poi == suggested_poi:
+            color = COLOR_MODEL
+        elif poi == baseline_poi:
+            color = COLOR_BASELINE
         else:
-            color = COLOR_WORST
+            color = COLOR_NEUTRAL
         poi_to_label_and_color[poi] = (label, color)
 
     def draw_badge_h_a(row: int, col: int, level: int):
@@ -252,22 +247,25 @@ def run_with_movement(
         pois = positions[2:n_positions]
         suggested_idx = suggest_poi(pois, agent_pos, human_pos, grid_size=grid_size)
         suggested_poi = pois[suggested_idx]
+        baseline_idx = nearest_human_baseline(pois, human_pos)
+        baseline_poi = pois[baseline_idx]
 
-        weights = DEFAULT_WEIGHTS
         lines = []
         for i, poi in enumerate(pois):
-            cost = cost_function(poi, agent_pos, human_pos, grid_size, *weights)
             te_a, te_h, e, p, ttm = cost_components(poi, agent_pos, human_pos, grid_size)
-            marker = " *" if poi == suggested_poi else ""
-            lines.append(f"  P{i+1} {poi}: cost={cost:.3f} (Travel Effort A={te_a:.2f} H={te_h:.2f} energy={e:.2f} privacy={p:.2f} Time-to-Meet={ttm:.2f}){marker}")
+            tags = []
+            if poi == suggested_poi:
+                tags.append("MODEL")
+            if poi == baseline_poi:
+                tags.append("BASELINE")
+            marker = f" [{', '.join(tags)}]" if tags else ""
+            lines.append(f"  P{i+1} {poi}: dA={te_a:.2f} dH={te_h:.2f} ttm={ttm:.2f}{marker}")
         print(f"\n--- Scenario {scenario} ---")
         print(f"H: {human_pos}  A: {agent_pos}  POIs: {pois}")
-        print("Per POI: cost (Travel Effort A/H, energy expenditure, privacy, Time-to-Meet) - lower=better:")
         print("\n".join(lines))
-        print(f"Suggested: P{suggested_idx+1} {suggested_poi}")
 
         completed = run_episode(
-            env, lbf, viewer, grid_size, human_pos, agent_pos, pois, suggested_poi,
+            env, lbf, viewer, grid_size, human_pos, agent_pos, pois, suggested_poi, baseline_poi,
         )
         if not completed:
             break
@@ -295,7 +293,6 @@ def main():
 
     if args.no_visualize:
         n_show = min(n_scenarios, 5) if n_scenarios > 0 else 5
-        weights = DEFAULT_WEIGHTS
         suggest_poi = get_suggestor(args.model)
         for s in range(n_show):
             n_positions = 2 + N_POIS
@@ -304,14 +301,19 @@ def main():
             pois = positions[2:n_positions]
             suggested_idx = suggest_poi(pois, agent_pos, human_pos, grid_size=grid_size)
             suggested_poi = pois[suggested_idx]
+            baseline_idx = nearest_human_baseline(pois, human_pos)
+            baseline_poi = pois[baseline_idx]
             lines = []
             for i, poi in enumerate(pois):
-                c = cost_function(poi, agent_pos, human_pos, grid_size, *weights)
-                m = " *" if poi == suggested_poi else ""
-                lines.append(f"  P{i+1} {poi}: cost={c:.3f}{m}")
+                tags = []
+                if poi == suggested_poi:
+                    tags.append("MODEL")
+                if poi == baseline_poi:
+                    tags.append("BASELINE")
+                marker = f" [{', '.join(tags)}]" if tags else ""
+                lines.append(f"  P{i+1} {poi}{marker}")
             print(f"Scenario {s+1}: H={human_pos} A={agent_pos} POIs={pois}")
             print("\n".join(lines))
-            print(f"  -> P{suggested_idx+1} {suggested_poi}")
         print("\nRun without --no-visualize to see movement.")
     else:
         print(f"Running {n_scenarios if n_scenarios > 0 else 'infinite'} scenarios, {N_POIS} POIs (model={args.model}). Close window to exit.")
