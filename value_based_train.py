@@ -42,6 +42,7 @@ class PlottingCallback(BaseCallback):
         self.plot_path = Path(plot_path) if plot_path else None
         self.reward_history: list[float] = []
         self.agreement_history: list[float] = []
+        self.cumulative_reward_history: list[float] = []
         self.step_history: list[int] = []
 
     def _on_step(self) -> bool:
@@ -59,6 +60,8 @@ class PlottingCallback(BaseCallback):
                     rewards.append(reward)
             mean_reward = float(np.mean(rewards))
             self.reward_history.append(mean_reward)
+            cumulative = float(np.sum(self.reward_history))
+            self.cumulative_reward_history.append(cumulative)
             self.step_history.append(self.num_timesteps)
 
             # Agreement with nearest-human baseline
@@ -78,7 +81,7 @@ class PlottingCallback(BaseCallback):
             return
         import matplotlib.pyplot as plt
 
-        fig, axes = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
+        fig, axes = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
         steps = self.step_history
 
         axes[0].plot(steps, self.reward_history, color="tab:green", linewidth=0.8, alpha=0.9, marker="o", markersize=3)
@@ -86,16 +89,21 @@ class PlottingCallback(BaseCallback):
         axes[0].set_title("RL Training (DQN)")
         axes[0].grid(True, alpha=0.3)
 
-        if self.agreement_history:
-            axes[1].plot(steps, self.agreement_history, color="tab:green", linewidth=0.8, alpha=0.9, marker="o", markersize=3)
-            axes[1].set_ylabel("Agreement with nearest-human baseline")
-            axes[1].set_ylim(0, 1.05)
-        else:
-            axes[1].plot(steps, self.reward_history, color="tab:green", linewidth=0.8, alpha=0.9)
-            axes[1].set_ylabel("Mean Reward")
-        axes[1].set_xlabel("Timesteps")
-        axes[1].set_title("Agreement with nearest-human baseline" if self.agreement_history else "Mean Reward")
+        axes[1].plot(steps, self.cumulative_reward_history, color="tab:olive", linewidth=0.8, alpha=0.9, marker="o", markersize=3)
+        axes[1].set_ylabel("Cumulative Reward")
+        axes[1].set_title("Cumulative Reward")
         axes[1].grid(True, alpha=0.3)
+
+        if self.agreement_history:
+            axes[2].plot(steps, self.agreement_history, color="tab:green", linewidth=0.8, alpha=0.9, marker="o", markersize=3)
+            axes[2].set_ylabel("Agreement with nearest-human baseline")
+            axes[2].set_ylim(0, 1.05)
+        else:
+            axes[2].plot(steps, self.reward_history, color="tab:green", linewidth=0.8, alpha=0.9)
+            axes[2].set_ylabel("Mean Reward")
+        axes[2].set_xlabel("Timesteps")
+        axes[2].set_title("Agreement with nearest-human baseline" if self.agreement_history else "Mean Reward")
+        axes[2].grid(True, alpha=0.3)
 
         plt.tight_layout()
         plt.savefig(str(self.plot_path), dpi=150, bbox_inches="tight")

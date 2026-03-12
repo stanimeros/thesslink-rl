@@ -141,19 +141,26 @@ def _plot(
 ) -> None:
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
+    cumulative = list(np.cumsum(rewards))
+
+    fig, axes = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
 
     axes[0].plot(steps, rewards, color="tab:orange", linewidth=0.8, alpha=0.9, marker="o", markersize=3)
     axes[0].set_ylabel("Mean Reward")
     axes[0].set_title("Tabular RL Training (Q-Learning)")
     axes[0].grid(True, alpha=0.3)
 
-    axes[1].plot(steps, agreements, color="tab:orange", linewidth=0.8, alpha=0.9, marker="o", markersize=3)
-    axes[1].set_ylabel("Agreement with nearest-human baseline")
-    axes[1].set_ylim(0, 1.05)
-    axes[1].set_xlabel("Episodes")
-    axes[1].set_title("Agreement with nearest-human baseline")
+    axes[1].plot(steps, cumulative, color="tab:red", linewidth=0.8, alpha=0.9, marker="o", markersize=3)
+    axes[1].set_ylabel("Cumulative Reward")
+    axes[1].set_title("Cumulative Reward")
     axes[1].grid(True, alpha=0.3)
+
+    axes[2].plot(steps, agreements, color="tab:orange", linewidth=0.8, alpha=0.9, marker="o", markersize=3)
+    axes[2].set_ylabel("Agreement with nearest-human baseline")
+    axes[2].set_ylim(0, 1.05)
+    axes[2].set_xlabel("Episodes")
+    axes[2].set_title("Agreement with nearest-human baseline")
+    axes[2].grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.savefig(str(plot_path), dpi=150, bbox_inches="tight")
