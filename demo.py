@@ -20,7 +20,7 @@ import lbforaging  # pyright: ignore[reportMissingImports]
 import numpy as np
 import pyglet
 
-from cost_function import cost_function, cost_components, DEFAULT_WEIGHTS, pick_best_poi
+from cost_function import cost_function, cost_components, DEFAULT_WEIGHTS, nearest_human_baseline
 from lbforaging.foraging.environment import Action, ForagingEnv  # pyright: ignore[reportMissingImports]
 from lbforaging.foraging.rendering import Viewer  # pyright: ignore[reportMissingImports]
 
@@ -36,8 +36,8 @@ N_POIS = 3
 def get_suggestor(model: str):
     """Return suggest function for given model: ppo, dqn, or cost."""
     if model == "cost":
-        return lambda pois, agent_pos, human_pos, grid_size=(64, 64): pick_best_poi(
-            pois, agent_pos, human_pos, grid_size=grid_size
+        return lambda pois, agent_pos, human_pos, grid_size=(64, 64): nearest_human_baseline(
+            pois, human_pos
         )
     if model == "ppo":
         from policy_based_train import suggest_poi_rl

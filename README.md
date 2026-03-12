@@ -10,7 +10,7 @@
 - **Cost components per POI:** Travel Effort (agent, human), energy (human effort, range [0.2, 0.8]), privacy (prefer near human), Time-to-Meet
 - **Output:** POI with minimum cost
 - **Reward:** `-cost` (RL learns to minimize cost)
-- **Baseline:** `pick_best_poi` (cost formula) used for RL evaluation
+- **Baseline:** `nearest_human_baseline` (pick POI closest to human) used for RL evaluation
 - **Demo:** Shows steps + cost per POI
 
 ## Setup
@@ -70,7 +70,7 @@ python demo.py --no-visualize
 
 ```
 thesslink-rl/
-├── cost_function.py        # cost_components, cost_function, pick_best_poi
+├── cost_function.py        # cost_components, cost_function, nearest_human_baseline
 ├── poi_environment.py      # Gymnasium env for POI suggestion (RL)
 ├── policy_based_train.py   # PPO training (policy-based), suggest_poi_rl()
 ├── value_based_train.py    # DQN training (value-based), suggest_poi_dqn()
@@ -109,6 +109,10 @@ $$\text{cost} = w_{TE_a} \cdot d_A + w_{TE_h} \cdot d_H + w_e \cdot e + w_p \cdo
 $$\text{cost} = w_{TE_a} \cdot d_A + w_{TE_h} \cdot d_H + w_e \cdot (0.2 + 0.6 d_H) + w_p \cdot (1 - d_H) + w_{TTM} \cdot \max(d_A, d_H)$$
 
 Default weights: $w_{TE_a} = w_{TE_h} = w_e = w_p = w_{TTM} = 0.20$.
+
+### Baseline
+
+`nearest_human_baseline`: picks the POI with the smallest Manhattan distance to the human. Simple, interpretable heuristic — the RL model is evaluated against this.
 
 ### Related improvements / ideas
 

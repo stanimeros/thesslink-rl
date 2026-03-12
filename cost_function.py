@@ -1,8 +1,8 @@
 """
 Cost components and POI suggestion helpers.
 
-- cost_components, cost_function: used for observation features and cost-based ranking
-- pick_best_poi: cost-based baseline (used for RL evaluation)
+- cost_components, cost_function: used for observation features and reward computation
+- nearest_human_baseline: simple heuristic baseline (pick POI closest to human)
 """
 from typing import Tuple, List
 
@@ -63,17 +63,10 @@ def cost_function(
     return sum(w * c for w, c in zip((w_travel_effort_agent, w_travel_effort_human, w_energy, w_privacy, w_time_to_meet), comps))
 
 
-def pick_best_poi(
+def nearest_human_baseline(
     pois: List[Tuple[int, int]],
-    agent_pos: Tuple[int, int],
     human_pos: Tuple[int, int],
-    weights: Tuple[float, float, float, float, float] | None = None,
-    grid_size: Tuple[int, int] = (64, 64),
 ) -> int:
-    """Return index of best POI by cost (lowest cost). Uses DEFAULT_WEIGHTS when weights is None."""
-    w = DEFAULT_WEIGHTS if weights is None else weights
-    costs = [
-        sum(wi * c for wi, c in zip(w, cost_components(p, agent_pos, human_pos, grid_size)))
-        for p in pois
-    ]
-    return int(np.argmin(costs))
+    """Return index of POI closest to human (Manhattan distance). Simple heuristic baseline."""
+    distances = [manhattan_distance(human_pos, poi) for poi in pois]
+    return int(np.argmin(distances))

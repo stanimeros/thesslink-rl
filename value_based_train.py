@@ -16,7 +16,7 @@ import numpy as np
 from stable_baselines3 import DQN
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 
-from cost_function import pick_best_poi
+from cost_function import nearest_human_baseline
 from poi_environment import PoISuggestionEnv
 
 MODEL_DIR = Path(__file__).parent / "models"
@@ -61,15 +61,14 @@ class PlottingCallback(BaseCallback):
             self.reward_history.append(mean_reward)
             self.step_history.append(self.num_timesteps)
 
-            # Agreement with cost baseline (pick_best_poi)
+            # Agreement with nearest-human baseline
             agreements = 0
             for _ in range(self.n_eval_episodes):
                 obs, _ = eval_env.reset()
                 rl_action = int(self.model.predict(obs, deterministic=True)[0])
                 human_pos = eval_env._human_pos
-                agent_pos = eval_env._agent_pos
                 pois = eval_env._pois
-                baseline_action = pick_best_poi(pois, agent_pos, human_pos, grid_size=(64, 64))
+                baseline_action = nearest_human_baseline(pois, human_pos)
                 agreements += 1 if rl_action == baseline_action else 0
             self.agreement_history.append(agreements / self.n_eval_episodes)
         return True
@@ -89,13 +88,13 @@ class PlottingCallback(BaseCallback):
 
         if self.agreement_history:
             axes[1].plot(steps, self.agreement_history, color="tab:green", linewidth=0.8, alpha=0.9, marker="o", markersize=3)
-            axes[1].set_ylabel("Agreement with pick_best_poi")
+            axes[1].set_ylabel("Agreement with nearest-human baseline")
             axes[1].set_ylim(0, 1.05)
         else:
             axes[1].plot(steps, self.reward_history, color="tab:green", linewidth=0.8, alpha=0.9)
             axes[1].set_ylabel("Mean Reward")
         axes[1].set_xlabel("Timesteps")
-        axes[1].set_title("Agreement with pick_best_poi" if self.agreement_history else "Mean Reward")
+        axes[1].set_title("Agreement with nearest-human baseline" if self.agreement_history else "Mean Reward")
         axes[1].grid(True, alpha=0.3)
 
         plt.tight_layout()
@@ -210,7 +209,7 @@ def evaluate_vs_baseline(
     n_episodes: int = 500,
     grid_size: tuple[int, int] = (64, 64),
 ) -> dict:
-    """Compare DQN vs cost-based pick_best_poi. Returns agreement rate."""
+    """Compare DQN vs nearest-human baseline. Returns agreement rate."""
     env = PoISuggestionEnv(grid_size=grid_size, seed=42)
     agreements = 0
     total = 0
@@ -221,9 +220,8 @@ def evaluate_vs_baseline(
         rl_action = int(rl_action)
 
         human_pos = env._human_pos
-        agent_pos = env._agent_pos
         pois = env._pois
-        baseline_action = pick_best_poi(pois, agent_pos, human_pos, grid_size=grid_size)
+        baseline_action = nearest_human_baseline(pois, human_pos)
 
         if rl_action == baseline_action:
             agreements += 1
@@ -249,7 +247,7 @@ def main():
             return
         path = best_zip if best_zip.exists() else model_zip
         model = DQN.load(str(path))
-        print("Evaluating DQN vs cost baseline...")
+        print("Evaluating DQN vs nearest-human baseline...")
         stats = evaluate_vs_baseline(model, n_episodes=args.eval_episodes)
         print(f"Agreement: {stats['agreement']:.1%} ({stats['agreements']}/{stats['total']})")
         return
@@ -261,9 +259,9 @@ def main():
         seed=args.seed,
         plot_path=None if args.no_plot else PLOT_FILE,
     )
-    print("\nEvaluating vs cost baseline...")
+    print("\nEvaluating vs nearest-human baseline...")
     stats = evaluate_vs_baseline(model, n_episodes=args.eval_episodes)
-    print(f"Agreement with cost-based pick_best_poi: {stats['agreement']:.1%}")
+    print(f"Agreement with nearest-human baseline: {stats['agreement']:.1%}")
 
 
 if __name__ == "__main__":
