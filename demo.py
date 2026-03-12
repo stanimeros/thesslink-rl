@@ -9,6 +9,7 @@ Usage:
   python demo.py --model qlearning  # Tabular RL (Q-Learning)
   python demo.py --model cost       # Nearest-human baseline only
   python demo.py --mode compare     # 4-panel: all models side by side
+  python demo.py --mode navigate    # Navigation env (obstacles + A*)
   python demo.py --scenarios 10
   python demo.py --scenarios 0      # Infinite until window closed
   python demo.py --no-visualize
@@ -29,7 +30,7 @@ from lbforaging.foraging.rendering import Viewer  # pyright: ignore[reportMissin
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", choices=["ppo", "dqn", "qlearning", "cost"], default="ppo", help="Model for POI suggestion (default: ppo)")
-parser.add_argument("--mode", choices=["single", "compare"], default="single", help="single: one model, compare: 4-panel all models (default: single)")
+parser.add_argument("--mode", choices=["single", "compare", "navigate"], default="single", help="single: one model, compare: 4-panel all models, navigate: PoINavigationEnv with obstacles")
 parser.add_argument("--no-visualize", action="store_true", help="Skip lb-foraging window")
 parser.add_argument("--scenarios", type=int, default=5, help="Scenarios to run (0=infinite until window closed)")
 args = parser.parse_args()
@@ -573,6 +574,154 @@ def run_comparison(
         env.close()
 
 
+# ---------------------------------------------------------------------------
+# Navigation mode: PoINavigationEnv with obstacles
+# ---------------------------------------------------------------------------
+
+def run_navigation(
+    n_scenarios: int,
+    algo: str = "ppo",
+) -> None:
+    """
+    Visualize cooperative navigation with static obstacles using PoINavigationEnv.
+    Two agents (H=agent1, A=agent2) navigate to the target POI while avoiding obstacles.
+    Obstacles are drawn as dark grey filled cells.
+    """
+    from poi_environment import PoINavigationEnv, _MOVES
+
+    env = PoINavigationEnv(seed=42)
+    env_id = "Foraging-64x64-2p-3f-v3"
+
+    lbf_env = gym.make(
+        env_id,
+        render_mode="human",
+        allow_agent_on_food=True,
+        allow_agent_on_agent=True,
+    )
+    lbf_env.reset(seed=42)
+    lbf = lbf_env.unwrapped
+    assert isinstance(lbf, ForagingEnv)
+    lbf._init_render()
+    viewer = lbf.viewer
+    assert isinstance(viewer, Viewer)
+    viewer.grid_size = 9
+    rows, cols = env.grid_size
+    viewer.width = 1 + cols * (viewer.grid_size + 1)
+    viewer.height = 1 + rows * (viewer.grid_size + 1)
+    viewer.window.set_size(viewer.width, viewer.height)
+
+    # Load navigation model
+    if algo == "ppo":
+        from stable_baselines3 import PPO
+        nav_model = PPO.load(str(__import__("pathlib").Path("models/navigation/ppo/nav_ppo")))
+        def predict(obs):
+            a, _ = nav_model.predict(obs, deterministic=True)
+            return int(a)
+    elif algo == "dqn":
+        from stable_baselines3 import DQN
+        nav_model = DQN.load(str(__import__("pathlib").Path("models/navigation/dqn/nav_dqn")))
+        def predict(obs):
+            a, _ = nav_model.predict(obs, deterministic=True)
+            return int(a)
+    else:
+        import pickle
+        model_path = __import__("pathlib").Path("models/navigation/qlearning/nav_qtable.pkl")
+        with open(model_path, "rb") as f:
+            q_table = pickle.load(f)
+        from navigation_train import _discretize_nav, _NAV_ACTIONS
+        def predict(obs):
+            return int(np.argmax(q_table.get(_discretize_nav(obs), np.zeros(_NAV_ACTIONS))))
+
+    COLOR_OBSTACLE = (60, 60, 60, 255)
+    COLOR_TARGET = (0, 180, 0, 255)
+    COLOR_OTHER_POI = (120, 120, 120, 255)
+
+    def _make_nav_badge(nav_env: PoINavigationEnv):
+        target = nav_env._target_poi
+        pois = nav_env._pois
+        obstacles = nav_env._obstacles
+
+        def draw_badge(row: int, col: int, level: int):
+            cell = (row, col)
+            if cell in obstacles:
+                label, color = "#", COLOR_OBSTACLE
+            elif cell == target:
+                label, color = "T", COLOR_TARGET
+            elif cell in pois:
+                idx = pois.index(cell)
+                label, color = f"P{idx+1}", COLOR_OTHER_POI
+            elif cell == (int(nav_env._agent1_pos[0]), int(nav_env._agent1_pos[1])):
+                label, color = "H", COLOR_HUMAN
+            elif cell == (int(nav_env._agent2_pos[0]), int(nav_env._agent2_pos[1])):
+                label, color = "A", COLOR_AGENT
+            else:
+                return
+
+            gs = viewer.grid_size + 1
+            badge_x = col * gs + gs / 2
+            badge_y = viewer.height - gs * (row + 1) + gs / 2
+            pyglet.text.Label(
+                label,
+                font_size=10,
+                bold=(cell == target),
+                x=int(badge_x),
+                y=int(badge_y),
+                anchor_x="center",
+                anchor_y="center",
+                color=color,
+            ).draw()
+
+        return draw_badge
+
+    def _sync_lbf(nav_env: PoINavigationEnv):
+        """Sync lbforaging field/players from PoINavigationEnv state."""
+        lbf.field = np.zeros((rows, cols), dtype=np.int32)  # type: ignore[assignment]
+        for i, poi in enumerate(nav_env._pois):
+            lbf.field[poi[0], poi[1]] = 2 if poi == nav_env._target_poi else 1
+        lbf.players[0].position = tuple(nav_env._agent1_pos)
+        lbf.players[1].position = tuple(nav_env._agent2_pos)
+        lbf.players[0].level = 1
+        lbf.players[1].level = 2
+        lbf._gen_valid_moves()
+        viewer._draw_badge = _make_nav_badge(nav_env)
+
+    scenario = 0
+    while viewer.isopen:
+        if n_scenarios > 0 and scenario >= n_scenarios:
+            break
+        scenario += 1
+
+        (obs1, obs2), _ = env.reset()
+        _sync_lbf(env)
+        lbf_env.render()
+        time.sleep(1)
+
+        print(f"\n--- Navigation Scenario {scenario} ---")
+        print(f"Agent1: {env._agent1_pos}  Agent2: {env._agent2_pos}")
+        print(f"Target POI: {env._target_poi}  All POIs: {env._pois}")
+        print(f"Obstacles: {len(env._obstacles)} cells")
+
+        done = False
+        while not done:
+            if not viewer.isopen:
+                break
+            a1 = predict(obs1)
+            a2 = predict(obs2)
+            (obs1, obs2), reward, terminated, truncated, info = env.step((a1, a2))
+            done = terminated or truncated
+            _sync_lbf(env)
+            lbf_env.render()
+            time.sleep(0.15)
+
+        if not viewer.isopen:
+            break
+
+        print(f"  Done — both arrived: {info['both_arrived']}  steps: {info['step']}")
+        time.sleep(5)
+
+    lbf_env.close()
+
+
 def main():
     grid_size = (64, 64)
     rng = random.Random(42)
@@ -584,6 +733,14 @@ def main():
     else:
         print(f"ThessLink: Multiple scenarios (model={args.model}, 3 POIs)")
     print("=" * 50)
+
+    if args.mode == "navigate":
+        if args.no_visualize:
+            print("--no-visualize is not supported in navigate mode.")
+            return
+        print(f"Running navigation mode ({args.model}) with obstacles. Close window to exit.")
+        run_navigation(n_scenarios, algo=args.model)
+        return
 
     if args.mode == "compare":
         if args.no_visualize:
