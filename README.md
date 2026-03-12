@@ -22,24 +22,36 @@ pip install -e lb-foraging/
 pip install -r requirements.txt
 ```
 
+## Algorithms
+
+Three RL categories are compared on the same environment:
+
+| Category | Algorithm | File |
+|----------|-----------|------|
+| **Tabular RL** | Q-Learning | `tabular_train.py` |
+| **Deep Value-based RL** | DQN | `value_based_train.py` |
+| **Policy Gradient (Actor-Critic)** | PPO | `policy_based_train.py` |
+
 ## Usage
 
-### 1. Train policy-based model (`policy_based_train.py`)
+### 1. Tabular RL — Q-Learning (`tabular_train.py`)
+
+Discretizes the 15-float observation into bins to build a Q-table. Suitable as a baseline for comparing against deep RL methods.
 
 ```bash
-python policy_based_train.py              # Train PPO 50k steps (cost reward), save to models/
-python policy_based_train.py --steps 100000
-python policy_based_train.py --no-plot   # Skip generating training_plot_ppo.png
-python policy_based_train.py --no-train  # Evaluate loaded model vs cost baseline
+python tabular_train.py              # Train 50k episodes, save to models/qlearning/
+python tabular_train.py --episodes 200000
+python tabular_train.py --no-plot   # Skip generating training_plot_qlearning.png
+python tabular_train.py --no-train  # Evaluate loaded Q-table vs baseline
 ```
 
-Produces `models/ppo/best_model.zip`, `models/ppo/ppo_poi_suggestion.zip`, and `training_plot_ppo.png`.
+Produces `models/qlearning/qtable.pkl` and `training_plot_qlearning.png`.
 
-![Training plot](training_plot_ppo.png)
+![Q-Learning training plot](training_plot_qlearning.png)
 
-### 2. Train value-based model (`value_based_train.py`)
+### 2. Deep Value-based RL — DQN (`value_based_train.py`)
 
-DQN (value-based RL) for POI suggestion. Same env and reward; outputs Q-values per action.
+DQN approximates Q-values with a neural network. Same env and reward as Q-Learning.
 
 ```bash
 python value_based_train.py              # Train DQN 50k steps, save training_plot_dqn.png
@@ -48,19 +60,35 @@ python value_based_train.py --no-plot   # Skip plot
 python value_based_train.py --no-train  # Evaluate only
 ```
 
-Produces `models/dqn/best_model.zip`, `models/dqn/dqn_poi_suggestion.zip`, and `training_plot_dqn.png`. Use `suggest_poi_dqn()` for inference.
+Produces `models/dqn/best_model.zip`, `models/dqn/dqn_poi_suggestion.zip`, and `training_plot_dqn.png`.
 
 ![DQN training plot](training_plot_dqn.png)
 
-### 3. Run demo (`demo.py`)
+### 3. Policy Gradient (Actor-Critic) — PPO (`policy_based_train.py`)
 
-Shows **cost** per POI with color-coded labels (green=optimal, blue=less, red=worst). Choose which model to use for POI suggestion.
+PPO directly learns a policy (Actor-Critic). Same env and reward.
+
+```bash
+python policy_based_train.py              # Train PPO 50k steps, save to models/ppo/
+python policy_based_train.py --steps 100000
+python policy_based_train.py --no-plot   # Skip generating training_plot_ppo.png
+python policy_based_train.py --no-train  # Evaluate loaded model vs baseline
+```
+
+Produces `models/ppo/best_model.zip`, `models/ppo/ppo_poi_suggestion.zip`, and `training_plot_ppo.png`.
+
+![PPO training plot](training_plot_ppo.png)
+
+### 4. Run demo (`demo.py`)
+
+Color-coded POI labels: **green** = model suggestion, **red** = nearest-human baseline, **grey** = neither.
 
 ```bash
 python demo.py                         # 5 scenarios, PPO model (default)
-python demo.py --model ppo             # Policy-based (PPO)
-python demo.py --model dqn             # Value-based (DQN)
-python demo.py --model cost            # Cost baseline (no RL)
+python demo.py --model ppo             # Policy Gradient: PPO
+python demo.py --model dqn             # Deep Value-based: DQN
+python demo.py --model qlearning       # Tabular RL: Q-Learning
+python demo.py --model cost            # Nearest-human baseline only
 python demo.py --scenarios 10
 python demo.py --scenarios 0           # Infinite until window closed
 python demo.py --no-visualize
@@ -72,14 +100,17 @@ python demo.py --no-visualize
 thesslink-rl/
 ├── cost_function.py        # cost_components, cost_function, nearest_human_baseline
 ├── poi_environment.py      # Gymnasium env for POI suggestion (RL)
-├── policy_based_train.py   # PPO training (policy-based), suggest_poi_rl()
-├── value_based_train.py    # DQN training (value-based), suggest_poi_dqn()
-├── demo.py                 # Demo with cost display (--model ppo|dqn|cost)
+├── tabular_train.py        # Tabular RL: Q-Learning, suggest_poi_qlearning()
+├── value_based_train.py    # Deep Value-based RL: DQN, suggest_poi_dqn()
+├── policy_based_train.py   # Policy Gradient (Actor-Critic): PPO, suggest_poi_rl()
+├── demo.py                 # Demo (--model ppo|dqn|qlearning|cost)
 ├── models/                 # RL models
-│   ├── ppo/                # PPO: best_model.zip, ppo_poi_suggestion.zip
-│   └── dqn/                # DQN: best_model.zip, dqn_poi_suggestion.zip
-├── training_plot_ppo.png   # PPO training plot
-├── training_plot_dqn.png   # DQN training plot
+│   ├── qlearning/          # Q-Learning: qtable.pkl
+│   ├── dqn/                # DQN: best_model.zip, dqn_poi_suggestion.zip
+│   └── ppo/                # PPO: best_model.zip, ppo_poi_suggestion.zip
+├── training_plot_qlearning.png
+├── training_plot_dqn.png
+├── training_plot_ppo.png
 ├── lb-foraging/            # lb-foraging env (visualization)
 ├── requirements.txt
 └── README.md
@@ -134,9 +165,10 @@ Human comfort is prioritized ($w_{TE_h}$ highest). `energy` and `privacy` are de
 
 ## Flow
 
-1. **policy_based_train.py** – Train policy-based (PPO) → `models/ppo/`
-2. **value_based_train.py** – Train value-based (DQN) → `models/dqn/`
-3. **demo.py** – Load model (--model ppo|dqn|cost) → suggest POI → visualize
+1. **tabular_train.py** – Train Tabular RL (Q-Learning) → `models/qlearning/`
+2. **value_based_train.py** – Train Deep Value-based RL (DQN) → `models/dqn/`
+3. **policy_based_train.py** – Train Policy Gradient (PPO) → `models/ppo/`
+4. **demo.py** – Load model (--model qlearning|dqn|ppo|cost) → suggest POI → visualize
 
 ## License
 

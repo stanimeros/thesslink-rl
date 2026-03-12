@@ -25,7 +25,7 @@ from lbforaging.foraging.environment import Action, ForagingEnv  # pyright: igno
 from lbforaging.foraging.rendering import Viewer  # pyright: ignore[reportMissingImports]
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--model", choices=["ppo", "dqn", "cost"], default="ppo", help="Model for POI suggestion (default: ppo)")
+parser.add_argument("--model", choices=["ppo", "dqn", "qlearning", "cost"], default="ppo", help="Model for POI suggestion (default: ppo)")
 parser.add_argument("--no-visualize", action="store_true", help="Skip lb-foraging window")
 parser.add_argument("--scenarios", type=int, default=5, help="Scenarios to run (0=infinite until window closed)")
 args = parser.parse_args()
@@ -45,6 +45,9 @@ def get_suggestor(model: str):
     if model == "dqn":
         from value_based_train import suggest_poi_dqn
         return suggest_poi_dqn
+    if model == "qlearning":
+        from tabular_train import suggest_poi_qlearning
+        return suggest_poi_qlearning
     raise ValueError(f"Unknown model: {model}")
 
 
