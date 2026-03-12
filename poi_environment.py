@@ -158,44 +158,34 @@ class PoINavigationEnv(gym.Env):
     def _generate_obstacles(
         self, occupied: set[tuple[int, int]]
     ) -> FrozenSet[tuple[int, int]]:
-        """Generate random obstacles ensuring all non-obstacle cells are connected."""
+        """
+        Generate random obstacles with a single connectivity check at the end.
+        Place obstacles randomly, then flood-fill from a free cell; any free cell
+        not reached is converted back to free (obstacle removed) to guarantee
+        full connectivity. Occupied cells (agents, POIs) are never blocked.
+        """
         total = self.rows * self.cols
         n_obs = int(total * self.obstacle_density)
-        all_cells = [
+        candidates = [
             (r, c)
             for r in range(self.rows)
             for c in range(self.cols)
             if (r, c) not in occupied
         ]
-        self._rng.shuffle(all_cells)
-        obstacles: set[tuple[int, int]] = set()
-        for cell in all_cells:
-            if len(obstacles) >= n_obs:
-                break
-            obstacles.add(cell)
-            if not self._is_connected(obstacles, occupied):
-                obstacles.discard(cell)
-        return frozenset(obstacles)
+        chosen = self._rng.choice(len(candidates), size=min(n_obs, len(candidates)), replace=False)
+        obstacles: set[tuple[int, int]] = {candidates[i] for i in chosen}
 
-    def _is_connected(
-        self,
-        obstacles: set[tuple[int, int]],
-        occupied: set[tuple[int, int]],
-    ) -> bool:
-        """BFS flood fill to verify all free cells are reachable."""
-        free = [
+        # Single BFS flood fill from any free cell to find disconnected free cells
+        free_start = next(
             (r, c)
             for r in range(self.rows)
             for c in range(self.cols)
             if (r, c) not in obstacles
-        ]
-        if not free:
-            return False
-        start = free[0]
-        visited = {start}
-        queue = [start]
+        )
+        visited: set[tuple[int, int]] = {free_start}
+        queue: deque[tuple[int, int]] = deque([free_start])
         while queue:
-            r, c = queue.pop()
+            r, c = queue.popleft()
             for dr, dc in _DIRS:
                 nb = (r + dr, c + dc)
                 if (
@@ -206,7 +196,18 @@ class PoINavigationEnv(gym.Env):
                 ):
                     visited.add(nb)
                     queue.append(nb)
-        return len(visited) == len(free)
+
+        # Remove obstacles that isolated free cells (restore connectivity)
+        all_free = {
+            (r, c)
+            for r in range(self.rows)
+            for c in range(self.cols)
+            if (r, c) not in obstacles
+        }
+        isolated = all_free - visited
+        obstacles -= isolated
+
+        return frozenset(obstacles)
 
     # ------------------------------------------------------------------
     # Reset / Step
