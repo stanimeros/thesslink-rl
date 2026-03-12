@@ -1,8 +1,7 @@
 """
 Gymnasium environment for POI suggestion. Used for Reinforcement Learning training.
 
-State: (human_pos, agent_pos, poi1, poi2, poi3) normalized to [0,1], plus cost components
-       for each POI (travel_effort_agent, travel_effort_human, energy, privacy, time_to_meet) = 10 + 15 = 25 floats
+State: cost components for each POI (travel_effort_agent, travel_effort_human, energy, privacy, time_to_meet) = 5*3 = 15 floats
 Action: Discrete(3) - which POI to suggest (0, 1, 2)
 Reward: -cost (Travel Effort, energy expenditure, privacy, Time-to-Meet)
 """
@@ -14,11 +13,6 @@ import numpy as np
 from cost_function import cost_components, cost_function, DEFAULT_WEIGHTS
 
 
-def _normalize_pos(pos: tuple[int, int], rows: int, cols: int) -> np.ndarray:
-    """Normalize (row, col) to [0, 1] range."""
-    return np.array([pos[0] / max(1, rows - 1), pos[1] / max(1, cols - 1)], dtype=np.float32)
-
-
 def build_observation(
     human_pos: tuple[int, int],
     agent_pos: tuple[int, int],
@@ -26,14 +20,7 @@ def build_observation(
     grid_size: tuple[int, int] = (64, 64),
 ) -> np.ndarray:
     """Build observation vector for RL policy. Same format as PoISuggestionEnv._get_obs."""
-    rows, cols = grid_size
-    parts = [
-        _normalize_pos(human_pos, rows, cols),
-        _normalize_pos(agent_pos, rows, cols),
-        _normalize_pos(pois[0], rows, cols),
-        _normalize_pos(pois[1], rows, cols),
-        _normalize_pos(pois[2], rows, cols),
-    ]
+    parts = []
     for poi in pois:
         comps = cost_components(poi, agent_pos, human_pos, grid_size)
         parts.append(np.array(comps, dtype=np.float32))
@@ -61,11 +48,11 @@ class PoISuggestionEnv(gym.Env):
         self.rows, self.cols = grid_size
         self.weights = DEFAULT_WEIGHTS if weights is None else weights
 
-        # State: human(2) + agent(2) + poi1(2) + poi2(2) + poi3(2) + cost_components for each POI (5*3=15) = 25 floats
+        # State: cost_components for each POI (travel_effort_agent, travel_effort_human, energy, privacy, time_to_meet) * 3 POIs = 15 floats
         self.observation_space = gym.spaces.Box(
             low=0.0,
             high=1.0,
-            shape=(25,),
+            shape=(15,),
             dtype=np.float32,
         )
         self.action_space = gym.spaces.Discrete(3)
@@ -85,14 +72,7 @@ class PoISuggestionEnv(gym.Env):
     def _get_obs(self) -> np.ndarray:
         """Build observation vector from current state."""
         assert self._human_pos is not None and self._agent_pos is not None and self._pois is not None
-        parts = [
-            _normalize_pos(self._human_pos, self.rows, self.cols),
-            _normalize_pos(self._agent_pos, self.rows, self.cols),
-            _normalize_pos(self._pois[0], self.rows, self.cols),
-            _normalize_pos(self._pois[1], self.rows, self.cols),
-            _normalize_pos(self._pois[2], self.rows, self.cols),
-        ]
-        # Add cost components for each POI (travel_effort_agent, travel_effort_human, energy, privacy, time_to_meet) - already in [0,1]
+        parts = []
         for poi in self._pois:
             comps = cost_components(poi, self._agent_pos, self._human_pos, self.grid_size)
             parts.append(np.array(comps, dtype=np.float32))

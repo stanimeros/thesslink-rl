@@ -108,7 +108,9 @@ $$\text{cost} = w_{TE_a} \cdot d_A + w_{TE_h} \cdot d_H + w_e \cdot e + w_p \cdo
 
 $$\text{cost} = w_{TE_a} \cdot d_A + w_{TE_h} \cdot d_H + w_e \cdot (0.2 + 0.6 d_H) + w_p \cdot (1 - d_H) + w_{TTM} \cdot \max(d_A, d_H)$$
 
-Default weights: $w_{TE_a} = w_{TE_h} = w_e = w_p = w_{TTM} = 0.20$.
+Default weights: $w_{TE_a} = 0.20,\ w_{TE_h} = 0.35,\ w_e = 0.10,\ w_p = 0.10,\ w_{TTM} = 0.25$.
+
+Human comfort is prioritized ($w_{TE_h}$ highest). `energy` and `privacy` are derivatives of $d_H$, so their weights are kept low to avoid triple-counting the same signal.
 
 ### Baseline
 
@@ -126,7 +128,7 @@ Default weights: $w_{TE_a} = w_{TE_h} = w_e = w_p = w_{TTM} = 0.20$.
 
 ## Reinforcement Learning
 
-- **State:** Normalized positions + cost components (Travel Effort, energy, privacy, Time-to-Meet) per POI
+- **State:** Cost components per POI (travel_effort_agent, travel_effort_human, energy, privacy, time_to_meet) × 3 POIs = 15 floats
 - **Action:** Discrete(3) – which POI to suggest
 - **Reward:** `-cost` – minimize cost
 

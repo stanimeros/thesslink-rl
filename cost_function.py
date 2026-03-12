@@ -8,7 +8,12 @@ from typing import Tuple, List
 
 import numpy as np
 
-DEFAULT_WEIGHTS = (0.20, 0.20, 0.20, 0.20, 0.20)
+# Weights: (w_travel_effort_agent, w_travel_effort_human, w_energy, w_privacy, w_time_to_meet)
+# Prioritize human comfort: travel_effort_human gets highest weight.
+# energy and privacy are derivatives of travel_effort_human (see cost_components),
+# so their weights are kept low to avoid triple-counting the same signal.
+# time_to_meet captures the joint wait — moderate weight.
+DEFAULT_WEIGHTS = (0.20, 0.35, 0.10, 0.10, 0.25)
 
 
 def manhattan_distance(pos_a: Tuple[int, int], pos_b: Tuple[int, int]) -> float:
