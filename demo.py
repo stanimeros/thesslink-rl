@@ -6,7 +6,9 @@ Usage:
   python demo.py                    # 5 scenarios, PPO model (default)
   python demo.py --model ppo        # Policy-based (PPO)
   python demo.py --model dqn        # Value-based (DQN)
-  python demo.py --model cost       # Cost baseline (no RL)
+  python demo.py --model qlearning  # Tabular RL (Q-Learning)
+  python demo.py --model cost       # Nearest-human baseline only
+  python demo.py --mode compare     # 4-panel: all models side by side
   python demo.py --scenarios 10
   python demo.py --scenarios 0      # Infinite until window closed
   python demo.py --no-visualize
@@ -19,6 +21,7 @@ import gymnasium as gym
 import lbforaging  # pyright: ignore[reportMissingImports]
 import numpy as np
 import pyglet
+from pyglet.gl import glPushMatrix, glPopMatrix, glTranslatef
 
 from cost_function import cost_components, nearest_human_baseline
 from lbforaging.foraging.environment import Action, ForagingEnv  # pyright: ignore[reportMissingImports]
@@ -26,6 +29,7 @@ from lbforaging.foraging.rendering import Viewer  # pyright: ignore[reportMissin
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", choices=["ppo", "dqn", "qlearning", "cost"], default="ppo", help="Model for POI suggestion (default: ppo)")
+parser.add_argument("--mode", choices=["single", "compare"], default="single", help="single: one model, compare: 4-panel all models (default: single)")
 parser.add_argument("--no-visualize", action="store_true", help="Skip lb-foraging window")
 parser.add_argument("--scenarios", type=int, default=5, help="Scenarios to run (0=infinite until window closed)")
 args = parser.parse_args()
@@ -285,14 +289,309 @@ def _run_with_movement(grid_size, n_scenarios, rng):
     run_with_movement(grid_size, n_scenarios, rng, suggest_poi)
 
 
+# ---------------------------------------------------------------------------
+# 4-panel comparison mode
+# ---------------------------------------------------------------------------
+
+PANEL_MODELS = [
+    ("Q-Learning", "qlearning"),
+    ("DQN", "dqn"),
+    ("PPO", "ppo"),
+    ("Baseline", "cost"),
+]
+
+
+def _make_panel_env(env_id: str) -> tuple[gym.Env, ForagingEnv]:
+    env = gym.make(
+        env_id,
+        render_mode="human",
+        allow_agent_on_food=True,
+        allow_agent_on_agent=True,
+    )
+    env.reset(seed=42)
+    lbf = env.unwrapped
+    assert isinstance(lbf, ForagingEnv)
+    return env, lbf
+
+
+def _setup_panel_lbf(
+    lbf: ForagingEnv,
+    grid_size: tuple[int, int],
+    human_pos: tuple[int, int],
+    agent_pos: tuple[int, int],
+    pois: list[tuple[int, int]],
+    suggested_poi: tuple[int, int],
+) -> None:
+    rows, cols = grid_size
+    lbf.current_step = 0
+    lbf._game_over = False
+    lbf.field = np.zeros((rows, cols), dtype=np.int32)  # type: ignore[assignment]
+    for poi in pois:
+        lbf.field[poi[0], poi[1]] = 2 if poi == suggested_poi else 1
+    lbf.players[0].position = tuple(human_pos)
+    lbf.players[1].position = tuple(agent_pos)
+    lbf.players[0].level = 1
+    lbf.players[1].level = 2
+    lbf._gen_valid_moves()
+
+
+def _make_badge_fn(
+    lbf: ForagingEnv,
+    viewer: Viewer,
+    pois: list[tuple[int, int]],
+    suggested_poi: tuple[int, int],
+    baseline_poi: tuple[int, int],
+    rows: int,
+    cols: int,
+    panel_h: int,
+):
+    """Return a _draw_badge function that draws labels with correct panel offset."""
+    poi_to_label_color: dict[tuple[int, int], tuple[str, tuple[int, int, int, int]]] = {}
+    for i, poi in enumerate(pois):
+        label = f"P{i+1}"
+        if poi == suggested_poi:
+            color = COLOR_MODEL
+        elif poi == baseline_poi:
+            color = COLOR_BASELINE
+        else:
+            color = COLOR_NEUTRAL
+        poi_to_label_color[poi] = (label, color)
+
+    def draw_badge(row: int, col: int, level: int):
+        p0, p1 = lbf.players[0].position, lbf.players[1].position
+        pos0 = (int(p0[0]), int(p0[1])) if p0 is not None else (-1, -1)
+        pos1 = (int(p1[0]), int(p1[1])) if p1 is not None else (-1, -1)
+        cell = (row, col)
+        if cell in poi_to_label_color:
+            label, color = poi_to_label_color[cell]
+        elif pos0 == cell:
+            label, color = "H", COLOR_HUMAN
+        elif pos1 == cell:
+            label, color = "A", COLOR_AGENT
+        else:
+            return
+
+        # Coordinates are in panel-local space (viewer.height == panel_h during draw)
+        gs = viewer.grid_size + 1
+        badge_x = col * gs + gs / 2
+        badge_y = panel_h - gs * (row + 1) + gs / 2
+        dx = 0
+        dy = 0
+        if row == 0:
+            dy = -8
+        elif row == rows - 1:
+            dy = 8
+        if col == 0:
+            dx = 12
+        elif col == cols - 1:
+            dx = -12
+        pyglet.text.Label(
+            label,
+            font_size=14,
+            bold=True,
+            x=int(badge_x + dx),
+            y=int(badge_y + dy),
+            anchor_x="center",
+            anchor_y="center",
+            color=color,
+        ).draw()
+
+    return draw_badge
+
+
+def _draw_panel(viewer: Viewer, lbf: ForagingEnv, ox: int, oy: int, panel_h: int) -> None:
+    """Draw one grid panel at pixel offset (ox, oy) using glTranslatef.
+    Temporarily sets viewer.height = panel_h so cell/badge y-coords are computed correctly."""
+    real_height = viewer.height
+    viewer.height = panel_h
+    glPushMatrix()
+    glTranslatef(ox, oy, 0)
+    viewer._draw_grid()
+    viewer._draw_food(lbf)
+    viewer._draw_players(lbf)
+    glPopMatrix()
+    viewer.height = real_height
+
+
+def run_comparison(
+    grid_size: tuple[int, int],
+    n_scenarios: int,
+    rng: random.Random,
+) -> None:
+    """Run 4-panel comparison: Q-Learning, DQN, PPO, Baseline side by side."""
+    rows, cols = grid_size
+    env_id = "Foraging-64x64-2p-3f-v3"
+    cell_px = 4  # pixels per cell
+    panel_w = 1 + cols * (cell_px + 1)
+    panel_h = 1 + rows * (cell_px + 1)
+    title_h = 28  # pixels for title bar above each panel
+    win_w = panel_w * 2
+    win_h = (panel_h + title_h) * 2
+
+    # Panel offsets (ox, oy) — pyglet y=0 is bottom
+    # Layout: top-left=Q-Learning, top-right=DQN, bottom-left=PPO, bottom-right=Baseline
+    panel_offsets = [
+        (0,       panel_h + title_h),   # top-left:     Q-Learning
+        (panel_w, panel_h + title_h),   # top-right:    DQN
+        (0,       0),                   # bottom-left:  PPO
+        (panel_w, 0),                   # bottom-right: Baseline
+    ]
+
+    # Create 4 envs (only first one drives the shared window)
+    envs_lbfs: list[tuple[gym.Env, ForagingEnv]] = [_make_panel_env(env_id) for _ in PANEL_MODELS]
+
+    # Init render on first env, then resize window
+    first_lbf = envs_lbfs[0][1]
+    first_lbf._init_render()
+    viewer = first_lbf.viewer
+    assert isinstance(viewer, Viewer)
+    viewer.grid_size = cell_px
+    viewer.width = win_w
+    viewer.height = win_h
+    viewer.window.set_size(win_w, win_h)
+
+    # Point all other lbfs at the same viewer
+    for _, lbf in envs_lbfs[1:]:
+        lbf.viewer = viewer
+
+    suggestors = [get_suggestor(model_key) for _, model_key in PANEL_MODELS]
+    baseline_suggestor = get_suggestor("cost")
+
+    def render_all_panels(
+        panel_lbfs: list[ForagingEnv],
+        badge_fns: list,
+    ) -> None:
+        from pyglet.gl import glClearColor, GL_COLOR_BUFFER_BIT
+        from pyglet.gl import glClear
+
+        viewer.window.switch_to()
+        viewer.window.dispatch_events()
+        glClearColor(1, 1, 1, 1)
+        glClear(GL_COLOR_BUFFER_BIT)
+
+        for i, (lbf, badge_fn) in enumerate(zip(panel_lbfs, badge_fns)):
+            ox, oy = panel_offsets[i]
+            lbf.viewer = viewer
+            viewer._draw_badge = badge_fn
+            _draw_panel(viewer, lbf, ox, oy, panel_h)
+
+        # Draw title labels above each panel
+        for i, (title, _) in enumerate(PANEL_MODELS):
+            ox, oy = panel_offsets[i]
+            pyglet.text.Label(
+                title,
+                font_size=16,
+                bold=True,
+                x=ox + panel_w // 2,
+                y=oy + panel_h + title_h // 2,
+                anchor_x="center",
+                anchor_y="center",
+                color=(30, 30, 30, 255),
+            ).draw()
+
+        viewer.window.flip()
+
+    def at_or_adjacent(p: tuple[int, int], t: tuple[int, int]) -> bool:
+        return abs(p[0] - t[0]) + abs(p[1] - t[1]) <= 1
+
+    scenario = 0
+    while viewer.isopen:
+        if n_scenarios > 0 and scenario >= n_scenarios:
+            break
+        scenario += 1
+
+        n_positions = 2 + N_POIS
+        positions = sample_positions(grid_size, n_positions, rng.randint(0, 2**31 - 1))
+        human_pos, agent_pos = positions[0], positions[1]
+        pois = positions[2:n_positions]
+        baseline_poi = pois[baseline_suggestor(pois, agent_pos, human_pos, grid_size=grid_size)]
+
+        suggested_pois = [
+            pois[s(pois, agent_pos, human_pos, grid_size=grid_size)] for s in suggestors
+        ]
+
+        print(f"\n--- Scenario {scenario} (compare) ---")
+        print(f"H: {human_pos}  A: {agent_pos}  POIs: {pois}")
+        for (title, _), sp in zip(PANEL_MODELS, suggested_pois):
+            print(f"  {title}: {sp}")
+
+        panel_lbfs = [lbf for _, lbf in envs_lbfs]
+
+        for lbf, sp in zip(panel_lbfs, suggested_pois):
+            _setup_panel_lbf(lbf, grid_size, human_pos, agent_pos, pois, sp)
+
+        badge_fns = [
+            _make_badge_fn(lbf, viewer, pois, sp, baseline_poi, rows, cols, panel_h)
+            for lbf, sp in zip(panel_lbfs, suggested_pois)
+        ]
+
+        render_all_panels(panel_lbfs, badge_fns)
+        time.sleep(1)
+
+        # Sync movement: all panels step together toward their suggested POI
+        steps_done = [0] * 4
+        max_steps = 150
+        for _ in range(max_steps):
+            if not viewer.isopen:
+                return
+
+            all_done = True
+            actions_list = []
+            for lbf, sp in zip(panel_lbfs, suggested_pois):
+                h_pos = (int(lbf.players[0].position[0]), int(lbf.players[0].position[1]))
+                a_pos = (int(lbf.players[1].position[0]), int(lbf.players[1].position[1]))
+                both_adj = at_or_adjacent(h_pos, sp) and at_or_adjacent(a_pos, sp)
+                if not both_adj:
+                    all_done = False
+                both_adj_not_on = both_adj and h_pos != sp and a_pos != sp
+                if both_adj_not_on:
+                    act_h = step_toward(h_pos, sp)
+                    act_a = Action.NONE
+                else:
+                    act_h = step_toward(h_pos, sp)
+                    act_a = step_toward(a_pos, sp)
+                actions_list.append([int(act_h.value), int(act_a.value)])
+
+            for (env, lbf), actions in zip(envs_lbfs, actions_list):
+                env.step(actions)
+
+            render_all_panels(panel_lbfs, badge_fns)
+            time.sleep(0.15)
+
+            if all_done:
+                break
+
+        # Hold 5 seconds before next scenario
+        end_time = time.time() + 5.0
+        while time.time() < end_time:
+            if not viewer.isopen:
+                return
+            render_all_panels(panel_lbfs, badge_fns)
+            time.sleep(0.1)
+
+    for env, _ in envs_lbfs:
+        env.close()
+
+
 def main():
     grid_size = (64, 64)
     rng = random.Random(42)
     n_scenarios = args.scenarios
 
     print("=" * 50)
-    print(f"ThessLink: Multiple scenarios (model={args.model}, 3 POIs)")
+    if args.mode == "compare":
+        print(f"ThessLink: 4-panel comparison (Q-Learning vs DQN vs PPO vs Baseline)")
+    else:
+        print(f"ThessLink: Multiple scenarios (model={args.model}, 3 POIs)")
     print("=" * 50)
+
+    if args.mode == "compare":
+        if args.no_visualize:
+            print("--no-visualize is not supported in compare mode.")
+            return
+        print(f"Running {n_scenarios if n_scenarios > 0 else 'infinite'} scenarios. Close window to exit.")
+        run_comparison(grid_size, n_scenarios, rng)
+        return
 
     if args.no_visualize:
         n_show = min(n_scenarios, 5) if n_scenarios > 0 else 5
