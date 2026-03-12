@@ -39,7 +39,7 @@ args = parser.parse_args()
 # ---------------------------------------------------------------------------
 
 ENV_ID = "Foraging-64x64-2p-3f-v3"
-MODEL_DIR = Path(__file__).parent / "models" / "navigation"
+MODEL_DIR = Path(__file__).parent / "models"
 CELL_PX = 4
 TITLE_H = 28
 

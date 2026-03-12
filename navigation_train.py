@@ -27,7 +27,7 @@ import numpy as np
 from cost_function import nearest_human_baseline
 from poi_environment import PoINavigationEnv
 
-MODEL_DIR = Path(__file__).parent / "models" / "navigation"
+MODEL_DIR = Path(__file__).parent / "models"
 PLOT_DIR = Path(__file__).parent
 
 # ─────────────────────────────────────────────────────────────────────────────
