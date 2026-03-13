@@ -14,7 +14,6 @@ Usage:
   python navigation_train.py --algo dqn --grid-size 32
   python navigation_train.py --algo qlearning --grid-size 8 --episodes 200000
   python navigation_train.py --no-train --grid-size 32   # evaluate only
-  python navigation_train.py --no-plot
 """
 from __future__ import annotations
 
@@ -83,41 +82,21 @@ def _eval_navigation(
     }
 
 
-def _plot(
-    steps: list[int],
-    rewards: list[float],
-    cost_successes: list[float],
-    agreements: list[float],
-    title: str,
-    color: str,
-    plot_path: Path,
+def _save_history(
+    steps: list,
+    rewards: list,
+    cost_successes: list,
+    agreements: list,
+    algo: str,
+    size_tag: str,
 ) -> None:
-    import matplotlib.pyplot as plt
-
-    fig, axes = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
-
-    axes[0].plot(steps, rewards, color=color, linewidth=0.8, alpha=0.9, marker="o", markersize=3)
-    axes[0].set_ylabel("Mean Episode Reward")
-    axes[0].set_title(f"Navigation Training ({title})")
-    axes[0].grid(True, alpha=0.3)
-
-    axes[1].plot(steps, cost_successes, color=color, linewidth=0.8, alpha=0.9, marker="o", markersize=3)
-    axes[1].set_ylabel("Cost Success (1 - cost)")
-    axes[1].set_ylim(0, 1.05)
-    axes[1].set_title("Cost Success (higher = closer to cost-optimal)")
-    axes[1].grid(True, alpha=0.3)
-
-    axes[2].plot(steps, agreements, color=color, linewidth=0.8, alpha=0.9, marker="o", markersize=3)
-    axes[2].set_ylabel("Agreement with cost-optimal baseline")
-    axes[2].set_ylim(0, 1.05)
-    axes[2].set_xlabel("Steps / Episodes")
-    axes[2].set_title("Agreement with cost-optimal baseline")
-    axes[2].grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig(str(plot_path), dpi=150, bbox_inches="tight")
-    plt.close()
-    print(f"Saved plot to {plot_path}")
+    path = PLOT_DIR / f"training_history_{algo}_{size_tag}.pkl"
+    with open(path, "wb") as f:
+        pickle.dump(
+            {"steps": steps, "rewards": rewards, "cost_success": cost_successes, "agreement": agreements},
+            f,
+        )
+    print(f"Saved history to {path}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -128,7 +107,6 @@ def train_ppo(
     total_timesteps: int = 200_000,
     seed: int = 42,
     eval_freq: int = 10_000,
-    plot_path: Path | None = None,
     grid_size: tuple[int, int] = (64, 64),
 ) -> None:
     from stable_baselines3 import PPO
@@ -183,9 +161,9 @@ def train_ppo(
             return True
 
         def _on_training_end(self):
-            if plot_path and reward_history:
-                _plot(step_history, reward_history, cost_success_history, agreement_history,
-                      f"PPO {size_tag}x{size_tag}", "tab:blue", plot_path)
+            if reward_history:
+                _save_history(step_history, reward_history, cost_success_history, agreement_history,
+                              "ppo", size_tag)
 
     model = PPO("MlpPolicy", env, learning_rate=1e-4, n_steps=128, batch_size=64,
                 n_epochs=10, gamma=0.99, max_grad_norm=0.5, clip_range_vf=10.0,
@@ -209,7 +187,6 @@ def train_dqn(
     total_timesteps: int = 200_000,
     seed: int = 42,
     eval_freq: int = 10_000,
-    plot_path: Path | None = None,
     grid_size: tuple[int, int] = (64, 64),
 ) -> None:
     from stable_baselines3 import DQN
@@ -258,9 +235,9 @@ def train_dqn(
             return True
 
         def _on_training_end(self):
-            if plot_path and reward_history:
-                _plot(step_history, reward_history, cost_success_history, agreement_history,
-                      f"DQN {size_tag}x{size_tag}", "tab:green", plot_path)
+            if reward_history:
+                _save_history(step_history, reward_history, cost_success_history, agreement_history,
+                              "dqn", size_tag)
 
     model = DQN("MlpPolicy", env, learning_rate=1e-4, buffer_size=50_000,
                 learning_starts=1000, batch_size=64, gamma=0.99, verbose=1, seed=seed)
@@ -297,7 +274,6 @@ def train_qlearning(
     total_episodes: int = 500_000,
     seed: int = 42,
     eval_freq: int = 25_000,
-    plot_path: Path | None = None,
     alpha: float = 0.1,
     gamma: float = 0.99,
     epsilon_start: float = 1.0,
@@ -369,9 +345,9 @@ def train_qlearning(
         pickle.dump(dict(q_table), f)
     print(f"Saved Q-table to {model_path}")
 
-    if plot_path and reward_history:
-        _plot(step_history, reward_history, cost_success_history, agreement_history,
-              f"Q-Learning {size_tag}x{size_tag}", "tab:orange", plot_path)
+    if reward_history:
+        _save_history(step_history, reward_history, cost_success_history, agreement_history,
+                      "qlearning", size_tag)
 
     def predict(obs):
         return int(np.argmax(q_table[_discretize_nav(obs)]))
@@ -422,12 +398,10 @@ def main():
     parser.add_argument("--episodes", type=int, default=500_000, help="Episodes (qlearning)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no-train", action="store_true")
-    parser.add_argument("--no-plot", action="store_true")
     args = parser.parse_args()
 
     grid_size = (args.grid_size, args.grid_size)
     size_tag = str(args.grid_size)
-    plot_path = None if args.no_plot else PLOT_DIR / f"training_plot_nav_{args.algo}_{size_tag}.png"
 
     if args.no_train:
         print(f"Evaluating {args.algo} navigation model ({size_tag}x{size_tag})...")
@@ -450,11 +424,11 @@ def main():
 
     print(f"Training navigation with {args.algo.upper()} on {size_tag}x{size_tag} grid...")
     if args.algo == "ppo":
-        train_ppo(total_timesteps=args.steps, seed=args.seed, plot_path=plot_path, grid_size=grid_size)
+        train_ppo(total_timesteps=args.steps, seed=args.seed, grid_size=grid_size)
     elif args.algo == "dqn":
-        train_dqn(total_timesteps=args.steps, seed=args.seed, plot_path=plot_path, grid_size=grid_size)
+        train_dqn(total_timesteps=args.steps, seed=args.seed, grid_size=grid_size)
     else:
-        train_qlearning(total_episodes=args.episodes, seed=args.seed, plot_path=plot_path, grid_size=grid_size)
+        train_qlearning(total_episodes=args.episodes, seed=args.seed, grid_size=grid_size)
 
 
 if __name__ == "__main__":
