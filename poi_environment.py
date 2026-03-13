@@ -18,7 +18,12 @@ Action: Discrete(75) — joint (target_idx, move1, move2)
     move2      ∈ {0..4}   — agent2 movement (NONE,N,S,W,E)
     Encoding:  action = target_idx * 25 + move1 * 5 + move2
 
-Reward: shared — -cost - step_penalty for the chosen target POI
+Reward: shared
+    -cost            — distance-based cost for the chosen target POI
+    -0.01            — step penalty (discourages stalling)
+    -0.10            — target-switch penalty (allows rerouting but filters noise;
+                        only applies when target_idx changes from previous step)
+    +5.00            — terminal bonus when both agents reach the target
 Episode ends when both agents reach chosen target or max_steps exceeded.
 """
 from __future__ import annotations
@@ -165,6 +170,7 @@ class PoINavigationEnv(gym.Env):
         # BFS distance maps from each POI — rebuilt once per episode
         self._poi_dist_maps: list[dict[tuple[int, int], float]] = []
         self._target_idx: int = 0
+        self._prev_target_idx: int = -1  # -1 = no previous target (first step)
         self._init_agent1_pos: tuple[int, int] = (0, 0)
         self._init_agent2_pos: tuple[int, int] = (0, 0)
 
@@ -257,6 +263,7 @@ class PoINavigationEnv(gym.Env):
         self._step_count = 0
         self._target_poi = self._pois[0]  # placeholder until first step
         self._target_idx = 0
+        self._prev_target_idx = -1  # reset: no penalty on the first step
 
         return self._get_obs(), {}
 
@@ -292,6 +299,10 @@ class PoINavigationEnv(gym.Env):
         move1 = (a % 25) // 5
         move2 = a % 5
 
+        # Apply switch penalty before updating target
+        switch_penalty = 0.1 if (self._prev_target_idx != -1 and target_idx != self._prev_target_idx) else 0.0
+
+        self._prev_target_idx = target_idx
         self._target_idx = target_idx
         self._target_poi = self._pois[target_idx]
 
@@ -312,10 +323,13 @@ class PoINavigationEnv(gym.Env):
         privacy = 1.0 - te_h
         ttm = max(te_a, te_h)
         cost = sum(w * v for w, v in zip(self.weights, (te_a, te_h, energy, privacy, ttm)))
-        reward = -cost - 0.01  # step penalty
-        reward = float(np.clip(reward, -10.0, 10.0))
 
         both_arrived = (self._agent1_pos == self._target_poi and self._agent2_pos == self._target_poi)
+        terminal_bonus = 5.0 if both_arrived else 0.0
+
+        reward = -cost - 0.01 - switch_penalty + terminal_bonus
+        reward = float(np.clip(reward, -10.0, 10.0))
+
         terminated = both_arrived
         truncated = self._step_count >= self.max_steps
 
