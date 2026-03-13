@@ -127,7 +127,7 @@ def _save_history(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def train_ppo(
-    total_timesteps: int = 500_000,
+    total_timesteps: int = 200_000,
     seed: int = 42,
     eval_freq: int = 25_000,
     grid_size: tuple[int, int] = (64, 64),
@@ -209,7 +209,7 @@ def train_ppo(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def train_dqn(
-    total_timesteps: int = 500_000,
+    total_timesteps: int = 200_000,
     seed: int = 42,
     eval_freq: int = 25_000,
     grid_size: tuple[int, int] = (64, 64),
@@ -434,7 +434,7 @@ def main():
     parser.add_argument("--algo", choices=["ppo", "dqn", "qlearning"], default="ppo")
     parser.add_argument("--grid-size", type=int, choices=[8, 32, 64], default=8,
                         help="Grid size (8, 32, or 64)")
-    parser.add_argument("--steps", type=int, default=500_000, help="Timesteps (ppo/dqn)")
+    parser.add_argument("--steps", type=int, default=200_000, help="Timesteps (ppo/dqn)")
     parser.add_argument("--episodes", type=int, default=200_000, help="Episodes (qlearning)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no-train", action="store_true")
