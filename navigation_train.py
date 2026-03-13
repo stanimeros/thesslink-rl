@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-Train cooperative navigation with PoINavigationEnv.
+Train cooperative navigation with PoINavigationEnv (centralized controller).
 
-Two agents share a policy and learn to navigate to the same POI on a grid
-with static obstacles. Supports three algorithm categories:
+A single model sees the full global state and outputs a joint action that
+selects the target POI and independently moves both agents. Supports three
+algorithm categories:
 
   Tabular RL       : Q-Learning  (--algo qlearning)
   Deep Value-based : DQN         (--algo dqn)
   Policy Gradient  : PPO         (--algo ppo)   [default]
 
 Usage:
-  python navigation_train.py                              # PPO, 64x64, 200k steps
+  python navigation_train.py                              # PPO, 8x8, 500k steps
   python navigation_train.py --algo dqn --grid-size 32
   python navigation_train.py --algo qlearning --grid-size 8 --episodes 200000
   python navigation_train.py --no-train --grid-size 32   # evaluate only
@@ -47,7 +48,7 @@ def _eval_navigation(
 ) -> dict:
     """
     Evaluate a navigation policy.
-    predict_fn(obs) -> action  (called once per agent per step)
+    predict_fn(obs) -> action  (single global observation → joint action)
     Returns dict with mean_reward, mean_cost, cost_success, mean_steps, agreement.
     cost_success = 1 - cost (clamped to [0,1]); higher = closer to cost-optimal.
     agreement = fraction of episodes where env target matches cost-optimal baseline.
@@ -56,13 +57,12 @@ def _eval_navigation(
     rewards, costs, steps_list, agreements = [], [], [], []
 
     for _ in range(n_episodes):
-        (obs1, obs2), _ = env.reset()
+        obs, _ = env.reset()
         ep_reward = 0.0
         done = False
         while not done:
-            a1 = predict_fn(obs1)
-            a2 = predict_fn(obs2)
-            (obs1, obs2), reward, terminated, truncated, info = env.step((a1, a2))
+            action = predict_fn(obs)
+            obs, reward, terminated, truncated, info = env.step(action)
             ep_reward += reward
             done = terminated or truncated
         rewards.append(ep_reward)
@@ -70,13 +70,11 @@ def _eval_navigation(
         steps_list.append(info["step"])
 
         # Agreement: does policy-chosen target match cost-optimal baseline?
-        # Policy target = POI both arrived at, or last chosen target_idx
         baseline_idx = cost_optimal_baseline(
             env._pois, env._init_agent1_pos, env._init_agent2_pos,
             env._obstacles, DEFAULT_WEIGHTS, env.grid_size
         )
-        policy_target = env._target_poi  # last chosen by policy
-        agreements.append(float(policy_target == env._pois[baseline_idx]))
+        agreements.append(float(env._target_poi == env._pois[baseline_idx]))
 
     cost_successes = [max(0.0, 1.0 - c) for c in costs]
     return {
@@ -121,30 +119,15 @@ def train_ppo(
     from stable_baselines3.common.callbacks import BaseCallback
     from stable_baselines3.common.vec_env import SubprocVecEnv
 
-    import gymnasium as gym
-
     size_tag = str(grid_size[0])
     save_dir = MODEL_DIR / "ppo"
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # max_steps scales with grid: enough room to navigate with obstacles
     max_steps = max(300, grid_size[0] * grid_size[1] // 2)
 
     def _make_env(env_seed: int):
         def _init():
-            class _NavWrapper(gym.Env):
-                def __init__(self):
-                    super().__init__()
-                    self._env = PoINavigationEnv(seed=env_seed, grid_size=grid_size, max_steps=max_steps)
-                    self.observation_space = self._env.observation_space
-                    self.action_space = self._env.action_space
-                def reset(self, **kwargs):
-                    (obs1, _), info = self._env.reset(**kwargs)
-                    return obs1, info
-                def step(self, action):
-                    (obs1, _), reward, term, trunc, info = self._env.step((action, action))
-                    return obs1, reward, term, trunc, info
-            return _NavWrapper()
+            return PoINavigationEnv(seed=env_seed, grid_size=grid_size, max_steps=max_steps)
         return _init
 
     n_envs = 8
@@ -175,7 +158,6 @@ def train_ppo(
                 _save_history(step_history, reward_history, cost_success_history, agreement_history,
                               "ppo", size_tag)
 
-    # n_steps per env; total rollout = n_steps * n_envs (must cover at least one episode)
     n_steps = max(512, max_steps) // n_envs
     model = PPO("MlpPolicy", env, learning_rate=3e-4, n_steps=n_steps, batch_size=256,
                 n_epochs=10, gamma=0.99, max_grad_norm=0.5, clip_range_vf=10.0,
@@ -203,30 +185,13 @@ def train_dqn(
 ) -> None:
     from stable_baselines3 import DQN
     from stable_baselines3.common.callbacks import BaseCallback
-    import gymnasium as gym
 
     size_tag = str(grid_size[0])
     save_dir = MODEL_DIR / "dqn"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     max_steps = max(300, grid_size[0] * grid_size[1] // 2)
-
-    class _NavWrapper(gym.Env):
-        def __init__(self):
-            super().__init__()
-            self._env = PoINavigationEnv(seed=seed, grid_size=grid_size, max_steps=max_steps)
-            self.observation_space = self._env.observation_space
-            self.action_space = self._env.action_space
-
-        def reset(self, **kwargs):
-            (obs1, _), info = self._env.reset(**kwargs)
-            return obs1, info
-
-        def step(self, action):
-            (obs1, _), reward, term, trunc, info = self._env.step((action, action))
-            return obs1, reward, term, trunc, info
-
-    env = _NavWrapper()
+    env = PoINavigationEnv(seed=seed, grid_size=grid_size, max_steps=max_steps)
 
     reward_history, cost_success_history, agreement_history, step_history = [], [], [], []
 
@@ -253,7 +218,6 @@ def train_dqn(
                 _save_history(step_history, reward_history, cost_success_history, agreement_history,
                               "dqn", size_tag)
 
-    # exploration_fraction=0.3 keeps ε-greedy exploration for 150k steps (at 500k total)
     model = DQN("MlpPolicy", env, learning_rate=1e-4, buffer_size=100_000,
                 learning_starts=1000, batch_size=128, gamma=0.99,
                 exploration_fraction=0.3, exploration_final_eps=0.05,
@@ -273,11 +237,12 @@ def train_dqn(
 # Q-Learning (Tabular RL)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_NAV_ACTIONS = 15  # composite: target_idx*5 + move
+# Joint action space: target_idx(0-2) * 25 + move1(0-4) * 5 + move2(0-4)
+_NAV_ACTIONS = 75
 
 # Observation layout (27 floats):
-#   [0:2]  self_pos, [2:4] other_pos
-#   [4:8]  wall_bits_self (N/S/W/E), [8:12] wall_bits_other
+#   [0:2]  agent1_pos, [2:4] agent2_pos
+#   [4:8]  wall_bits_a1 (N/S/W/E), [8:12] wall_bits_a2
 #   [12:27] cost_components × 3 POIs (5 each: te_a, te_h, energy, privacy, ttm)
 _COST_START = 12
 _COST_STRIDE = 5  # floats per POI
@@ -286,7 +251,7 @@ _COST_STRIDE = 5  # floats per POI
 def _discretize_nav(obs: np.ndarray) -> int:
     """
     Compact discrete state for tabular Q-Learning.
-    State = (best_poi_idx, wall_bits_self, dir_to_target, dist_bucket)
+    State = (best_poi_idx, wall_bits_a1, dir_to_target, dist_bucket)
     Total states: 3 × 16 × 8 × 3 = 1,152 — tractable for tabular RL.
     """
     # Best POI: index of POI with lowest weighted cost sum
@@ -300,19 +265,16 @@ def _discretize_nav(obs: np.ndarray) -> int:
     ]
     best_poi = int(np.argmin(costs))  # 0-2
 
-    # Wall bits self: 4 binary bits → integer 0-15
+    # Wall bits a1: 4 binary bits → integer 0-15
     wall_bits = int(obs[4]) * 8 + int(obs[5]) * 4 + int(obs[6]) * 2 + int(obs[7])  # 0-15
 
-    # Direction to target: use self_pos vs target's te_a to infer direction bucket
-    # Approximate from self_pos normalized coords (0-1) — 8 octants
+    # Direction: encode agent1 position as 8 octants relative to grid center
     sr, sc = float(obs[0]), float(obs[1])
-    # Use cost gradient: which direction reduces te_a most?
-    # Simplified: encode position as 8-directional bucket relative to grid center
     dr = sr - 0.5
     dc = sc - 0.5
     angle = int((np.arctan2(dc, dr) + np.pi) / (np.pi / 4)) % 8  # 0-7
 
-    # Distance bucket to best POI: te_a of best POI → 3 buckets
+    # Distance bucket to best POI (te_a of best POI → 3 buckets)
     te_a_best = float(obs[_COST_START + best_poi * _COST_STRIDE])
     dist_bucket = 0 if te_a_best < 0.25 else (1 if te_a_best < 0.55 else 2)  # 0-2
 
@@ -347,32 +309,26 @@ def train_qlearning(
     print(f"Training Q-Learning (navigation, {size_tag}x{size_tag}) for {total_episodes} episodes...")
 
     for episode in range(total_episodes):
-        (obs1, obs2), _ = env.reset()
+        obs, _ = env.reset()
         ep_reward = 0.0
         done = False
 
         while not done:
-            s1 = _discretize_nav(obs1)
-            s2 = _discretize_nav(obs2)
+            s = _discretize_nav(obs)
 
             if rng.random() < epsilon:
-                a1 = int(rng.integers(0, _NAV_ACTIONS))
-                a2 = int(rng.integers(0, _NAV_ACTIONS))
+                action = int(rng.integers(0, _NAV_ACTIONS))
             else:
-                a1 = int(np.argmax(q_table[s1]))
-                a2 = int(np.argmax(q_table[s2]))
+                action = int(np.argmax(q_table[s]))
 
-            (next_obs1, next_obs2), reward, terminated, truncated, _ = env.step((a1, a2))
+            next_obs, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
             ep_reward += reward
 
-            ns1 = _discretize_nav(next_obs1)
-            ns2 = _discretize_nav(next_obs2)
+            ns = _discretize_nav(next_obs)
+            q_table[s][action] += alpha * (reward + gamma * np.max(q_table[ns]) - q_table[s][action])
 
-            q_table[s1][a1] += alpha * (reward + gamma * np.max(q_table[ns1]) - q_table[s1][a1])
-            q_table[s2][a2] += alpha * (reward + gamma * np.max(q_table[ns2]) - q_table[s2][a2])
-
-            obs1, obs2 = next_obs1, next_obs2
+            obs = next_obs
 
         epsilon = max(epsilon_end, epsilon * epsilon_decay)
 

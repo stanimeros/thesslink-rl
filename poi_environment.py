@@ -1,17 +1,23 @@
 """
 Cooperative multi-agent navigation environment for ThessLink RL.
 
-Two symmetric agents (agent1, agent2) share a policy. The policy chooses which
-POI to navigate to (cost-optimal) and both agents navigate there. Target can
-be re-selected each step.
+Centralized controller design: a single "god-camera" model sees the full
+global state (both agent positions, all POIs, obstacles) and outputs a joint
+action that controls both agents independently while selecting a shared target.
 
-Observation (per agent, 27 floats):
-    self_pos (2) + other_pos (2) + wall_bits_self (4) + wall_bits_other (4)
+Observation (27 floats — global state):
+    agent1_pos (2) + agent2_pos (2) + wall_bits_a1 (4) + wall_bits_a2 (4)
     + cost_components × 3 POIs (15)
-    Wall bits encode blocked N/S/W/E directions, preventing deterministic loops.
-    Cost components use BFS distances; policy infers best POI from these.
-Action: Discrete(15) — composite (target_idx, move): target_idx ∈ {0,1,2}, move ∈ {NONE,N,S,W,E}
-Reward: shared — -cost - step_penalty for chosen target POI
+    Wall bits encode blocked N/S/W/E directions for each agent.
+    Cost components use BFS distances so the model can infer the best POI.
+
+Action: Discrete(75) — joint (target_idx, move1, move2)
+    target_idx ∈ {0,1,2}  — which POI both agents navigate to
+    move1      ∈ {0..4}   — agent1 movement (NONE,N,S,W,E)
+    move2      ∈ {0..4}   — agent2 movement (NONE,N,S,W,E)
+    Encoding:  action = target_idx * 25 + move1 * 5 + move2
+
+Reward: shared — -cost - step_penalty for the chosen target POI
 Episode ends when both agents reach chosen target or max_steps exceeded.
 """
 from __future__ import annotations
@@ -67,46 +73,48 @@ def _bfs_dist_map(
     return dist
 
 
-
-def _build_nav_obs_bfs(
-    self_pos: tuple[int, int],
-    other_pos: tuple[int, int],
+def _build_global_obs(
+    agent1_pos: tuple[int, int],
+    agent2_pos: tuple[int, int],
     poi_dist_maps: list[dict[tuple[int, int], float]],
     grid_size: tuple[int, int],
     obstacles: FrozenSet[tuple[int, int]],
 ) -> np.ndarray:
     """
-    Build 27-float observation:
-      self_pos(2) + other_pos(2) + wall_bits_self(4) + wall_bits_other(4)
+    Build 27-float global observation for the centralized controller:
+      agent1_pos(2) + agent2_pos(2) + wall_bits_a1(4) + wall_bits_a2(4)
       + cost_components×3_POIs(15)
-    Wall bits encode which of N/S/W/E directions are blocked for each agent,
-    preventing the model from getting stuck in deterministic loops at obstacles.
+
+    Cost components per POI (5 floats each):
+      te_a (agent1 BFS dist), te_h (agent2 BFS dist),
+      energy, privacy, ttm
     """
     rows, cols = grid_size
     max_dist = float(rows + cols)
-    self_norm = np.array([self_pos[0] / max(rows - 1, 1), self_pos[1] / max(cols - 1, 1)], dtype=np.float32)
-    other_norm = np.array([other_pos[0] / max(rows - 1, 1), other_pos[1] / max(cols - 1, 1)], dtype=np.float32)
-    walls_self = np.array(_wall_bits(self_pos, obstacles, rows, cols), dtype=np.float32)
-    walls_other = np.array(_wall_bits(other_pos, obstacles, rows, cols), dtype=np.float32)
-    parts = [self_norm, other_norm, walls_self, walls_other]
+    a1_norm = np.array([agent1_pos[0] / max(rows - 1, 1), agent1_pos[1] / max(cols - 1, 1)], dtype=np.float32)
+    a2_norm = np.array([agent2_pos[0] / max(rows - 1, 1), agent2_pos[1] / max(cols - 1, 1)], dtype=np.float32)
+    walls_a1 = np.array(_wall_bits(agent1_pos, obstacles, rows, cols), dtype=np.float32)
+    walls_a2 = np.array(_wall_bits(agent2_pos, obstacles, rows, cols), dtype=np.float32)
+    parts = [a1_norm, a2_norm, walls_a1, walls_a2]
     for dist_map in poi_dist_maps:
-        dist_s = min(dist_map.get(self_pos, float("inf")), max_dist)
-        dist_o = min(dist_map.get(other_pos, float("inf")), max_dist)
-        te_s = dist_s / max_dist
-        te_o = dist_o / max_dist
-        energy = 0.2 + 0.6 * te_o
-        privacy = 1.0 - te_o
-        ttm = max(te_s, te_o)
-        parts.append(np.array([te_s, te_o, energy, privacy, ttm], dtype=np.float32))
+        dist_a = min(dist_map.get(agent1_pos, float("inf")), max_dist)
+        dist_h = min(dist_map.get(agent2_pos, float("inf")), max_dist)
+        te_a = dist_a / max_dist
+        te_h = dist_h / max_dist
+        energy = 0.2 + 0.6 * te_h
+        privacy = 1.0 - te_h
+        ttm = max(te_a, te_h)
+        parts.append(np.array([te_a, te_h, energy, privacy, ttm], dtype=np.float32))
     return np.concatenate(parts).astype(np.float32)
 
 
 class PoINavigationEnv(gym.Env):
     """
-    Cooperative multi-agent navigation environment.
+    Centralized cooperative navigation environment.
 
-    Two symmetric agents (agent1, agent2) share a policy and must navigate
-    to the same target POI on a grid with static obstacles.
+    A single "god-camera" controller observes the full global state and
+    outputs a joint action: target POI + independent moves for both agents.
+    Both agents navigate to the same chosen POI.
     """
 
     metadata = {"render_modes": []}
@@ -126,13 +134,14 @@ class PoINavigationEnv(gym.Env):
         self.max_steps = max_steps
         self.weights = DEFAULT_WEIGHTS if weights is None else weights
 
-        # Observation: self_pos(2) + other_pos(2) + wall_bits_self(4) + wall_bits_other(4)
-        #              + cost_components*3(15) = 27
+        # Global observation: agent1_pos(2) + agent2_pos(2) + wall_bits×2(8)
+        #                     + cost_components×3_POIs(15) = 27
         self.observation_space = gym.spaces.Box(
             low=0.0, high=1.0, shape=(27,), dtype=np.float32
         )
-        # Composite: target_idx*5 + move (target_idx 0-2, move NONE/N/S/W/E 0-4)
-        self.action_space = gym.spaces.Discrete(15)
+        # Joint action: target_idx * 25 + move1 * 5 + move2
+        # target_idx ∈ {0,1,2}, move1/move2 ∈ {NONE,N,S,W,E}
+        self.action_space = gym.spaces.Discrete(75)
 
         self._rng = np.random.default_rng(seed)
         self._agent1_pos: tuple[int, int] = (0, 0)
@@ -156,10 +165,11 @@ class PoINavigationEnv(gym.Env):
         self, occupied: set[tuple[int, int]]
     ) -> FrozenSet[tuple[int, int]]:
         """
-        Generate random obstacles with a single connectivity check at the end.
-        Place obstacles randomly, then flood-fill from a free cell; any free cell
-        not reached is converted back to free (obstacle removed) to guarantee
-        full connectivity. Occupied cells (agents, POIs) are never blocked.
+        Generate random obstacles with a connectivity guarantee.
+        Place obstacles randomly, BFS from agent1's position (the connectivity
+        anchor), then convert any unreachable free cells to obstacles so all
+        remaining free cells form one connected component.
+        Occupied cells (agents, POIs) are never made into obstacles.
         """
         total = self.rows * self.cols
         n_obs = int(total * self.obstacle_density)
@@ -172,13 +182,9 @@ class PoINavigationEnv(gym.Env):
         chosen = self._rng.choice(len(candidates), size=min(n_obs, len(candidates)), replace=False)
         obstacles: set[tuple[int, int]] = {candidates[i] for i in chosen}
 
-        # Single BFS flood fill from any free cell to find disconnected free cells
-        free_start = next(
-            (r, c)
-            for r in range(self.rows)
-            for c in range(self.cols)
-            if (r, c) not in obstacles
-        )
+        # BFS from an occupied cell (agent1) so the main component is anchored
+        # to where agents and POIs live, not an arbitrary free cell.
+        free_start = self._agent1_pos
         visited: set[tuple[int, int]] = {free_start}
         queue: deque[tuple[int, int]] = deque([free_start])
         while queue:
@@ -194,7 +200,8 @@ class PoINavigationEnv(gym.Env):
                     visited.add(nb)
                     queue.append(nb)
 
-        # Remove obstacles that isolated free cells (restore connectivity)
+        # Convert unreachable free cells to obstacles so every remaining free
+        # cell is reachable from the agents/POIs (one connected component).
         all_free = {
             (r, c)
             for r in range(self.rows)
@@ -202,7 +209,7 @@ class PoINavigationEnv(gym.Env):
             if (r, c) not in obstacles
         }
         isolated = all_free - visited
-        obstacles -= isolated
+        obstacles |= isolated
 
         return frozenset(obstacles)
 
@@ -232,7 +239,7 @@ class PoINavigationEnv(gym.Env):
         self._init_agent1_pos = self._agent1_pos
         self._init_agent2_pos = self._agent2_pos
 
-        # Build BFS distance maps from each POI (policy chooses target each step)
+        # Build BFS distance maps from each POI
         self._poi_dist_maps = [
             _bfs_dist_map(poi, self._obstacles, self.rows, self.cols) for poi in self._pois
         ]
@@ -242,17 +249,12 @@ class PoINavigationEnv(gym.Env):
 
         return self._get_obs(), {}
 
-    def _get_obs(self) -> tuple[np.ndarray, np.ndarray]:
-        """Returns (obs_agent1, obs_agent2) using BFS distances + wall bits."""
-        obs1 = _build_nav_obs_bfs(
+    def _get_obs(self) -> np.ndarray:
+        """Returns the 27-float global observation."""
+        return _build_global_obs(
             self._agent1_pos, self._agent2_pos,
             self._poi_dist_maps, self.grid_size, self._obstacles,
         )
-        obs2 = _build_nav_obs_bfs(
-            self._agent2_pos, self._agent1_pos,
-            self._poi_dist_maps, self.grid_size, self._obstacles,
-        )
-        return obs1, obs2
 
     def _try_move(self, pos: tuple[int, int], action: int) -> tuple[int, int]:
         """Apply action, return new position (stays if wall/obstacle)."""
@@ -264,16 +266,20 @@ class PoINavigationEnv(gym.Env):
 
     def step(
         self,
-        actions: tuple[int, int],
-    ) -> tuple[tuple[np.ndarray, np.ndarray], float, bool, bool, dict]:
+        action: int,
+    ) -> tuple[np.ndarray, float, bool, bool, dict]:
         """
-        actions: (action_agent1, action_agent2) — composite (target_idx, move)
-        Returns: (obs_pair, shared_reward, terminated, truncated, info)
+        action: joint int encoding (target_idx * 25 + move1 * 5 + move2)
+          target_idx — which POI both agents navigate to (0-2)
+          move1      — agent1 movement direction (0-4: NONE,N,S,W,E)
+          move2      — agent2 movement direction (0-4: NONE,N,S,W,E)
+
+        Returns: (obs, shared_reward, terminated, truncated, info)
         """
-        a1, a2 = int(actions[0]), int(actions[1])
-        target_idx = min(a1 // 5, 2)  # policy chooses target (use agent1's)
-        move1 = a1 % 5
-        move2 = a2 % 5
+        a = int(action)
+        target_idx = min(a // 25, 2)
+        move1 = (a % 25) // 5
+        move2 = a % 5
 
         self._target_idx = target_idx
         self._target_poi = self._pois[target_idx]
@@ -282,7 +288,7 @@ class PoINavigationEnv(gym.Env):
         self._agent2_pos = self._try_move(self._agent2_pos, move2)
         self._step_count += 1
 
-        # Distance to chosen target from _poi_dist_maps
+        # BFS distance to chosen target for each agent
         max_dist = float(self.rows + self.cols)
         target_map = self._poi_dist_maps[target_idx]
         dist1 = min(target_map.get(self._agent1_pos, float("inf")), max_dist)

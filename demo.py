@@ -267,7 +267,7 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
     ]
 
     # optimal_idxs[i] = cost-optimal POI index for panel i (updated each scenario reset)
-    optimal_idxs = [0] * N_PANELS
+    optimal_idxs: list[int] = [0] * N_PANELS
 
     def render_frame(badge_fns: list[Callable]) -> None:
         viewer.window.switch_to()
@@ -301,10 +301,10 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
 
         # Reset all envs with the same seed so they get identical scenarios
         scenario_seed = scenario * 1000
-        obs_list: list[tuple[np.ndarray, np.ndarray]] = []
+        obs_list: list[np.ndarray] = []
         for nav_env in nav_envs:
-            obs_pair, _ = nav_env.reset(seed=scenario_seed)
-            obs_list.append(obs_pair)
+            obs, _ = nav_env.reset(seed=scenario_seed)
+            obs_list.append(obs)
 
         # Compute cost-optimal POI index (same scenario → same result for all panels)
         for i, nav_env in enumerate(nav_envs):
@@ -340,17 +340,16 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
             for i, (nav_env, policy) in enumerate(zip(nav_envs, policies)):
                 if done_flags[i]:
                     continue
-                obs1, obs2 = obs_list[i]
-                a1_raw = policy(obs1)
-                a2_raw = policy(obs2)
+                obs = obs_list[i]
+                a_raw = policy(obs)
                 # Lock target on first step; afterwards keep it fixed
                 if locked_targets[i] is None:
-                    locked_targets[i] = a1_raw // 5
+                    locked_targets[i] = a_raw // 25
                 target = locked_targets[i]
-                a1 = target * 5 + (a1_raw % 5)
-                a2 = target * 5 + (a2_raw % 5)
-                obs_pair, _, terminated, truncated, info = nav_env.step((a1, a2))
-                obs_list[i] = obs_pair
+                # Keep model's move choices but enforce the locked target
+                a = target * 25 + (a_raw % 25)
+                obs, _, terminated, truncated, info = nav_env.step(a)
+                obs_list[i] = obs
                 done_flags[i] = terminated or truncated
                 _sync_lbf(lbfs[i], nav_env)
 
