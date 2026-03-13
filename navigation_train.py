@@ -86,6 +86,21 @@ def _eval_navigation(
     }
 
 
+def _load_history(algo: str, size_tag: str) -> dict:
+    """
+    Load existing training history, or return empty lists if none exists.
+    Also carries extra keys (e.g. epsilon, episodes_done for Q-Learning).
+    """
+    path = get_history_path(algo, size_tag)
+    if path.exists():
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+        n = len(data.get("steps", []))
+        print(f"  Resuming: loaded {n} existing checkpoints from {path.name}")
+        return data
+    return {"steps": [], "rewards": [], "cost_success": [], "agreement": []}
+
+
 def _save_history(
     steps: list,
     rewards: list,
@@ -93,13 +108,15 @@ def _save_history(
     agreements: list,
     algo: str,
     size_tag: str,
+    **extra,
 ) -> None:
     save_dir = MODEL_DIR / algo
     save_dir.mkdir(parents=True, exist_ok=True)
     path = save_dir / f"training_history_{algo}_{size_tag}.pkl"
     with open(path, "wb") as f:
         pickle.dump(
-            {"steps": steps, "rewards": rewards, "cost_success": cost_successes, "agreement": agreements},
+            {"steps": steps, "rewards": rewards, "cost_success": cost_successes,
+             "agreement": agreements, **extra},
             f,
         )
     print(f"Saved history to {path}")
@@ -133,7 +150,12 @@ def train_ppo(
     n_envs = 6  # match physical core count
     env = SubprocVecEnv([_make_env(seed + i) for i in range(n_envs)])
 
-    reward_history, cost_success_history, agreement_history, step_history = [], [], [], []
+    # Load existing history (continues x-axis from where we left off)
+    hist = _load_history("ppo", size_tag)
+    step_history = hist["steps"]
+    reward_history = hist["rewards"]
+    cost_success_history = hist["cost_success"]
+    agreement_history = hist["agreement"]
 
     class _Callback(BaseCallback):
         def _on_step(self):
@@ -158,13 +180,22 @@ def train_ppo(
                 _save_history(step_history, reward_history, cost_success_history, agreement_history,
                               "ppo", size_tag)
 
+    save_path = save_dir / f"nav_ppo_{size_tag}"
     n_steps = max(512, max_steps) // n_envs
-    model = PPO("MlpPolicy", env, learning_rate=3e-4, n_steps=n_steps, batch_size=256,
-                n_epochs=10, gamma=0.99, max_grad_norm=0.5, clip_range_vf=10.0,
-                verbose=1, seed=seed)
-    model.learn(total_timesteps=total_timesteps, callback=_Callback())
-    model.save(str(save_dir / f"nav_ppo_{size_tag}"))
-    print(f"Saved PPO model to {save_dir / f'nav_ppo_{size_tag}'}")
+    if save_path.with_suffix(".zip").exists():
+        print(f"Resuming PPO from {save_path} (+{total_timesteps:,} steps)...")
+        model = PPO.load(str(save_path), env=env)
+        reset_num_timesteps = False
+    else:
+        model = PPO("MlpPolicy", env, learning_rate=3e-4, n_steps=n_steps, batch_size=256,
+                    n_epochs=10, gamma=0.99, max_grad_norm=0.5, clip_range_vf=10.0,
+                    verbose=1, seed=seed)
+        reset_num_timesteps = True
+
+    model.learn(total_timesteps=total_timesteps, callback=_Callback(),
+                reset_num_timesteps=reset_num_timesteps)
+    model.save(str(save_path))
+    print(f"Saved PPO model to {save_path}")
 
     def predict(obs):
         a, _ = model.predict(obs, deterministic=True)
@@ -193,7 +224,12 @@ def train_dqn(
     max_steps = max(300, grid_size[0] * grid_size[1] // 2)
     env = PoINavigationEnv(seed=seed, grid_size=grid_size, max_steps=max_steps)
 
-    reward_history, cost_success_history, agreement_history, step_history = [], [], [], []
+    # Load existing history (continues x-axis from where we left off)
+    hist = _load_history("dqn", size_tag)
+    step_history = hist["steps"]
+    reward_history = hist["rewards"]
+    cost_success_history = hist["cost_success"]
+    agreement_history = hist["agreement"]
 
     class _Callback(BaseCallback):
         def _on_step(self):
@@ -218,13 +254,22 @@ def train_dqn(
                 _save_history(step_history, reward_history, cost_success_history, agreement_history,
                               "dqn", size_tag)
 
-    model = DQN("MlpPolicy", env, learning_rate=1e-4, buffer_size=100_000,
-                learning_starts=1000, batch_size=128, gamma=0.99,
-                exploration_fraction=0.3, exploration_final_eps=0.05,
-                verbose=1, seed=seed)
-    model.learn(total_timesteps=total_timesteps, callback=_Callback())
-    model.save(str(save_dir / f"nav_dqn_{size_tag}"))
-    print(f"Saved DQN model to {save_dir / f'nav_dqn_{size_tag}'}")
+    save_path = save_dir / f"nav_dqn_{size_tag}"
+    if save_path.with_suffix(".zip").exists():
+        print(f"Resuming DQN from {save_path} (+{total_timesteps:,} steps)...")
+        model = DQN.load(str(save_path), env=env)
+        reset_num_timesteps = False
+    else:
+        model = DQN("MlpPolicy", env, learning_rate=1e-4, buffer_size=100_000,
+                    learning_starts=1000, batch_size=128, gamma=0.99,
+                    exploration_fraction=0.3, exploration_final_eps=0.05,
+                    verbose=1, seed=seed)
+        reset_num_timesteps = True
+
+    model.learn(total_timesteps=total_timesteps, callback=_Callback(),
+                reset_num_timesteps=reset_num_timesteps)
+    model.save(str(save_path))
+    print(f"Saved DQN model to {save_path}")
 
     def predict(obs):
         a, _ = model.predict(obs, deterministic=True)
@@ -297,14 +342,32 @@ def train_qlearning(
     save_dir.mkdir(parents=True, exist_ok=True)
 
     from collections import defaultdict
-    q_table: dict[int, np.ndarray] = defaultdict(lambda: np.zeros(_NAV_ACTIONS, dtype=np.float32))
 
     max_steps = max(300, grid_size[0] * grid_size[1] // 2)
     env = PoINavigationEnv(seed=seed, grid_size=grid_size, max_steps=max_steps)
     rng = np.random.default_rng(seed)
-    epsilon = epsilon_start
+    model_path = save_dir / f"nav_qtable_{size_tag}.pkl"
 
-    reward_history, cost_success_history, agreement_history, step_history = [], [], [], []
+    # Resume from saved Q-table + epsilon if they exist
+    hist = _load_history("qlearning", size_tag)
+    step_history: list = hist["steps"]
+    reward_history: list = hist["rewards"]
+    cost_success_history: list = hist["cost_success"]
+    agreement_history: list = hist["agreement"]
+
+    if model_path.exists():
+        with open(model_path, "rb") as f:
+            q_table: dict[int, np.ndarray] = defaultdict(
+                lambda: np.zeros(_NAV_ACTIONS, dtype=np.float32), pickle.load(f)
+            )
+        epsilon = float(hist.get("epsilon", epsilon_end))
+        episodes_done = int(hist.get("episodes_done", 0))
+        print(f"Resuming Q-Learning from {model_path} "
+              f"(+{total_episodes:,} episodes, ε={epsilon:.4f})...")
+    else:
+        q_table = defaultdict(lambda: np.zeros(_NAV_ACTIONS, dtype=np.float32))
+        epsilon = epsilon_start
+        episodes_done = 0
 
     print(f"Training Q-Learning (navigation, {size_tag}x{size_tag}) for {total_episodes} episodes...")
 
@@ -339,21 +402,22 @@ def train_qlearning(
             reward_history.append(stats["mean_reward"])
             cost_success_history.append(stats["cost_success"])
             agreement_history.append(stats["agreement"])
-            step_history.append(episode + 1)
+            # x-axis: absolute episode number across all runs
+            step_history.append(episodes_done + episode + 1)
             print(
-                f"  Episode {episode+1:>8}: reward={stats['mean_reward']:.3f}"
+                f"  Episode {episodes_done + episode + 1:>8}: reward={stats['mean_reward']:.3f}"
                 f"  cost_success={stats['cost_success']:.1%}"
                 f"  ε={epsilon:.4f}"
             )
 
-    model_path = save_dir / f"nav_qtable_{size_tag}.pkl"
     with open(model_path, "wb") as f:
         pickle.dump(dict(q_table), f)
     print(f"Saved Q-table to {model_path}")
 
-    if reward_history:
-        _save_history(step_history, reward_history, cost_success_history, agreement_history,
-                      "qlearning", size_tag)
+    _save_history(step_history, reward_history, cost_success_history, agreement_history,
+                  "qlearning", size_tag,
+                  epsilon=epsilon,
+                  episodes_done=episodes_done + total_episodes)
 
     def predict(obs):
         return int(np.argmax(q_table[_discretize_nav(obs)]))
