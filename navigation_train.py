@@ -130,7 +130,7 @@ def train_ppo(
             return PoINavigationEnv(seed=env_seed, grid_size=grid_size, max_steps=max_steps)
         return _init
 
-    n_envs = 8
+    n_envs = 6  # match physical core count
     env = SubprocVecEnv([_make_env(seed + i) for i in range(n_envs)])
 
     reward_history, cost_success_history, agreement_history, step_history = [], [], [], []

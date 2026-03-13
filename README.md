@@ -81,10 +81,10 @@ pip install -r requirements.txt
 ## Training
 
 ```bash
-# PPO — 500k steps, 8 parallel envs (~2 min on Apple M4)
+# PPO — 500k steps, 8 parallel envs
 python navigation_train.py --algo ppo --grid-size 8
 
-# DQN — 500k steps (~2.5 min on Apple M4)
+# DQN — 500k steps
 python navigation_train.py --algo dqn --grid-size 8
 
 # Q-Learning — 200k episodes
