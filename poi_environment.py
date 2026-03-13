@@ -1,19 +1,16 @@
 """
 Cooperative multi-agent navigation environment for ThessLink RL.
 
-Two symmetric agents (agent1, agent2) share a policy and navigate to the same
-target POI on a 64×64 grid with static obstacles.
+Two symmetric agents (agent1, agent2) share a policy. The policy chooses which
+POI to navigate to (cost-optimal) and both agents navigate there. Target can
+be re-selected each step.
 
-Observation (per agent, 22 floats):
-    self_pos (2) + other_pos (2) + cost_components × 3 POIs (15) + target_onehot (3)
-    Cost components use BFS distances (aligned with target selection).
-    target_onehot: one-hot encoding of which POI index is the target.
-Action: Discrete(5) — NONE, NORTH, SOUTH, WEST, EAST
-Reward: shared — -cost - step_penalty (cost from cost function; lower cost = higher reward)
-Episode ends when both agents reach target POI or max_steps exceeded.
-
-Performance: BFS distance maps are computed once per episode (one per POI + one
-for the target), so all distance lookups during step/obs are O(1).
+Observation (per agent, 19 floats):
+    self_pos (2) + other_pos (2) + cost_components × 3 POIs (15)
+    Cost components use BFS distances; policy infers best POI from these.
+Action: Discrete(15) — composite (target_idx, move): target_idx ∈ {0,1,2}, move ∈ {NONE,N,S,W,E}
+Reward: shared — -cost - step_penalty for chosen target POI
+Episode ends when both agents reach chosen target or max_steps exceeded.
 """
 from __future__ import annotations
 
@@ -74,19 +71,18 @@ def _build_nav_obs_bfs(
     self_pos: tuple[int, int],
     other_pos: tuple[int, int],
     poi_dist_maps: list[dict[tuple[int, int], float]],
-    target_idx: int,
     grid_size: tuple[int, int],
 ) -> np.ndarray:
     """
-    Build 22-float observation using BFS distances (aligned with target selection).
-    Includes explicit target_onehot so the agent knows which POI to navigate to.
+    Build 19-float observation: self_pos(2) + other_pos(2) + cost_components×3(15).
+    Policy chooses target from cost components.
     """
     rows, cols = grid_size
     max_dist = float(rows + cols)
     self_norm = np.array([self_pos[0] / max(rows - 1, 1), self_pos[1] / max(cols - 1, 1)], dtype=np.float32)
     other_norm = np.array([other_pos[0] / max(rows - 1, 1), other_pos[1] / max(cols - 1, 1)], dtype=np.float32)
     parts = [self_norm, other_norm]
-    for i, dist_map in enumerate(poi_dist_maps):
+    for dist_map in poi_dist_maps:
         dist_s = min(dist_map.get(self_pos, float("inf")), max_dist)
         dist_o = min(dist_map.get(other_pos, float("inf")), max_dist)
         te_s = dist_s / max_dist
@@ -95,9 +91,6 @@ def _build_nav_obs_bfs(
         privacy = 1.0 - te_o
         ttm = max(te_s, te_o)
         parts.append(np.array([te_s, te_o, energy, privacy, ttm], dtype=np.float32))
-    target_onehot = np.zeros(3, dtype=np.float32)
-    target_onehot[target_idx] = 1.0
-    parts.append(target_onehot)
     return np.concatenate(parts).astype(np.float32)
 
 
@@ -126,12 +119,12 @@ class PoINavigationEnv(gym.Env):
         self.max_steps = max_steps
         self.weights = DEFAULT_WEIGHTS if weights is None else weights
 
-        # Observation: self_pos(2) + other_pos(2) + cost_components*3(15) + target_onehot(3) = 22
+        # Observation: self_pos(2) + other_pos(2) + cost_components*3(15) = 19
         self.observation_space = gym.spaces.Box(
-            low=0.0, high=1.0, shape=(22,), dtype=np.float32
+            low=0.0, high=1.0, shape=(19,), dtype=np.float32
         )
-        # NONE, NORTH, SOUTH, WEST, EAST
-        self.action_space = gym.spaces.Discrete(5)
+        # Composite: target_idx*5 + move (target_idx 0-2, move NONE/N/S/W/E 0-4)
+        self.action_space = gym.spaces.Discrete(15)
 
         self._rng = np.random.default_rng(seed)
         self._agent1_pos: tuple[int, int] = (0, 0)
@@ -140,13 +133,8 @@ class PoINavigationEnv(gym.Env):
         self._target_poi: tuple[int, int] = (0, 0)
         self._obstacles: FrozenSet[tuple[int, int]] = frozenset()
         self._step_count: int = 0
-        self._prev_dist1: float = 0.0
-        self._prev_dist2: float = 0.0
 
-        # BFS distance maps — rebuilt once per episode
-        # _target_dist_map: distances FROM target (for progress reward)
-        # _poi_dist_maps: distances FROM each POI (for observation, aligned with target selection)
-        self._target_dist_map: dict[tuple[int, int], float] = {}
+        # BFS distance maps from each POI — rebuilt once per episode
         self._poi_dist_maps: list[dict[tuple[int, int], float]] = []
         self._target_idx: int = 0
         self._init_agent1_pos: tuple[int, int] = (0, 0)
@@ -233,44 +221,28 @@ class PoINavigationEnv(gym.Env):
         occupied = {self._agent1_pos, self._agent2_pos, *self._pois}
         self._obstacles = self._generate_obstacles(occupied)
 
-        # Select target POI using BFS distances (A*-quality, 2 BFS only)
-        max_dist = float(self.rows + self.cols)
-        a1_map = _bfs_dist_map(self._agent1_pos, self._obstacles, self.rows, self.cols)
-        a2_map = _bfs_dist_map(self._agent2_pos, self._obstacles, self.rows, self.cols)
-        best_idx = 0
-        best_cost = float("inf")
-        for i, poi in enumerate(self._pois):
-            te_a, te_h, energy, privacy, ttm = _cost_components_from_maps(poi, a1_map, a2_map, max_dist)
-            c = sum(w * v for w, v in zip(self.weights, (te_a, te_h, energy, privacy, ttm)))
-            if c < best_cost:
-                best_cost = c
-                best_idx = i
-        self._target_poi = self._pois[best_idx]
-        self._target_idx = best_idx
         self._init_agent1_pos = self._agent1_pos
         self._init_agent2_pos = self._agent2_pos
 
-        # Build BFS maps: target (for progress reward) + each POI (for observation)
-        self._target_dist_map = _bfs_dist_map(self._target_poi, self._obstacles, self.rows, self.cols)
+        # Build BFS distance maps from each POI (policy chooses target each step)
         self._poi_dist_maps = [
             _bfs_dist_map(poi, self._obstacles, self.rows, self.cols) for poi in self._pois
         ]
         self._step_count = 0
-        max_dist = float(self.rows + self.cols)
-        self._prev_dist1 = min(self._target_dist_map.get(self._agent1_pos, float("inf")), max_dist)
-        self._prev_dist2 = min(self._target_dist_map.get(self._agent2_pos, float("inf")), max_dist)
+        self._target_poi = self._pois[0]  # placeholder until first step
+        self._target_idx = 0
 
         return self._get_obs(), {}
 
     def _get_obs(self) -> tuple[np.ndarray, np.ndarray]:
-        """Returns (obs_agent1, obs_agent2) using BFS distances + target_onehot."""
+        """Returns (obs_agent1, obs_agent2) using BFS distances (no target_onehot)."""
         obs1 = _build_nav_obs_bfs(
             self._agent1_pos, self._agent2_pos,
-            self._poi_dist_maps, self._target_idx, self.grid_size
+            self._poi_dist_maps, self.grid_size
         )
         obs2 = _build_nav_obs_bfs(
             self._agent2_pos, self._agent1_pos,
-            self._poi_dist_maps, self._target_idx, self.grid_size
+            self._poi_dist_maps, self.grid_size
         )
         return obs1, obs2
 
@@ -287,25 +259,28 @@ class PoINavigationEnv(gym.Env):
         actions: tuple[int, int],
     ) -> tuple[tuple[np.ndarray, np.ndarray], float, bool, bool, dict]:
         """
-        actions: (action_agent1, action_agent2)
+        actions: (action_agent1, action_agent2) — composite (target_idx, move)
         Returns: (obs_pair, shared_reward, terminated, truncated, info)
         """
         a1, a2 = int(actions[0]), int(actions[1])
-        self._agent1_pos = self._try_move(self._agent1_pos, a1)
-        self._agent2_pos = self._try_move(self._agent2_pos, a2)
+        target_idx = min(a1 // 5, 2)  # policy chooses target (use agent1's)
+        move1 = a1 % 5
+        move2 = a2 % 5
+
+        self._target_idx = target_idx
+        self._target_poi = self._pois[target_idx]
+
+        self._agent1_pos = self._try_move(self._agent1_pos, move1)
+        self._agent2_pos = self._try_move(self._agent2_pos, move2)
         self._step_count += 1
 
-        # O(1) distance lookup from cached BFS map
+        # Distance to chosen target from _poi_dist_maps
         max_dist = float(self.rows + self.cols)
-        dist1 = min(self._target_dist_map.get(self._agent1_pos, float("inf")), max_dist)
-        dist2 = min(self._target_dist_map.get(self._agent2_pos, float("inf")), max_dist)
-        prev1 = min(self._prev_dist1, max_dist)
-        prev2 = min(self._prev_dist2, max_dist)
+        target_map = self._poi_dist_maps[target_idx]
+        dist1 = min(target_map.get(self._agent1_pos, float("inf")), max_dist)
+        dist2 = min(target_map.get(self._agent2_pos, float("inf")), max_dist)
 
-        self._prev_dist1 = dist1
-        self._prev_dist2 = dist2
-
-        # Cost-based reward: minimize cost (reward = -cost)
+        # Cost-based reward for chosen target
         te_a = dist1 / max_dist
         te_h = dist2 / max_dist
         energy = 0.2 + 0.6 * te_h
@@ -323,6 +298,7 @@ class PoINavigationEnv(gym.Env):
             "agent1_pos": self._agent1_pos,
             "agent2_pos": self._agent2_pos,
             "target_poi": self._target_poi,
+            "target_idx": self._target_idx,
             "pois": self._pois.copy(),
             "obstacles": self._obstacles,
             "step": self._step_count,

@@ -64,12 +64,14 @@ def _eval_navigation(
         costs.append(info["cost"])
         steps_list.append(info["step"])
 
-        # Agreement: does env target match cost-optimal baseline? (at init positions)
+        # Agreement: does policy-chosen target match cost-optimal baseline?
+        # Policy target = POI both arrived at, or last chosen target_idx
         baseline_idx = cost_optimal_baseline(
             env._pois, env._init_agent1_pos, env._init_agent2_pos,
             env._obstacles, DEFAULT_WEIGHTS, env.grid_size
         )
-        agreements.append(float(env._target_poi == env._pois[baseline_idx]))
+        policy_target = env._target_poi  # last chosen by policy
+        agreements.append(float(policy_target == env._pois[baseline_idx]))
 
     cost_successes = [max(0.0, 1.0 - c) for c in costs]
     return {
@@ -278,8 +280,8 @@ def train_dqn(
 # ─────────────────────────────────────────────────────────────────────────────
 
 _NAV_BINS = 3
-_NAV_OBS_DIM = 22  # self(2)+other(2)+costs*3(15)+target_onehot(3)
-_NAV_ACTIONS = 5
+_NAV_OBS_DIM = 19  # self(2)+other(2)+costs*3(15)
+_NAV_ACTIONS = 15  # composite: target_idx*5 + move
 _NAV_STATE_SIZE = _NAV_BINS ** _NAV_OBS_DIM  # tabular Q-learning impractical at this size
 
 

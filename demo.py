@@ -95,25 +95,35 @@ def _load_qlearning(size_tag: str) -> PredictFn:
 
 def _baseline_policy(nav_env: PoINavigationEnv) -> PredictFn:
     """
-    Greedy baseline: always move toward nearest-human POI using A*.
-    Re-evaluates target each step based on agent1's position.
+    Cost-optimal baseline: pick POI with lowest cost, greedy move toward it.
+    Returns composite action: target_idx*5 + move.
     """
-    from cost_function import astar_distance
+    from cost_function import astar_distance, cost_optimal_baseline, DEFAULT_WEIGHTS
+
+    _MOVES = [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)]
 
     def predict(obs: np.ndarray) -> int:
         rows, cols = nav_env.grid_size
-        self_r = round(float(obs[0]) * (rows - 1))
-        self_c = round(float(obs[1]) * (cols - 1))
+        self_r = round(float(obs[0]) * max(rows - 1, 1))
+        self_c = round(float(obs[1]) * max(cols - 1, 1))
+        other_r = round(float(obs[2]) * max(rows - 1, 1))
+        other_c = round(float(obs[3]) * max(cols - 1, 1))
         self_pos = (self_r, self_c)
-        target = nav_env._target_poi
+        other_pos = (other_r, other_c)
+
+        target_idx = cost_optimal_baseline(
+            nav_env._pois, self_pos, other_pos,
+            nav_env._obstacles, DEFAULT_WEIGHTS, nav_env.grid_size
+        )
+        target = nav_env._pois[target_idx]
         obstacles = nav_env._obstacles
 
         if self_pos == target:
-            return 0  # NONE
+            return target_idx * 5 + 0  # NONE
 
-        best_action = 0
+        best_move = 0
         best_dist = astar_distance(self_pos, target, obstacles, nav_env.grid_size)
-        for action, (dr, dc) in enumerate([(0,0),(-1,0),(1,0),(0,-1),(0,1)]):
+        for move, (dr, dc) in enumerate(_MOVES):
             nr, nc = self_r + dr, self_c + dc
             if not (0 <= nr < rows and 0 <= nc < cols):
                 continue
@@ -122,8 +132,8 @@ def _baseline_policy(nav_env: PoINavigationEnv) -> PredictFn:
             d = astar_distance((nr, nc), target, obstacles, nav_env.grid_size)
             if d < best_dist:
                 best_dist = d
-                best_action = action
-        return best_action
+                best_move = move
+        return target_idx * 5 + best_move
 
     return predict
 
