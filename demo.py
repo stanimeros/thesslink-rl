@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """
-ThessLink Navigation Demo — 4-panel cooperative navigation with obstacles.
+ThessLink Navigation Demo — 3-panel cooperative navigation with obstacles.
 
-Four panels run the same scenario (same positions + obstacles) simultaneously,
-each driven by a different algorithm: Q-Learning, DQN, PPO, Baseline.
+Three panels run the same scenario (same positions + obstacles) simultaneously,
+each driven by a different algorithm: Q-Learning, DQN, PPO.
+
+POI colours:
+  Green  — POI chosen by the model (model's target)
+  Blue   — POI chosen by the cost-optimal baseline
+  Cyan   — POI where model and baseline agree
 
 Usage:
   python demo.py                          # 5 scenarios, 64x64 grid
@@ -51,13 +56,15 @@ _ENV_ID_MAP = {
     64: "Foraging-64x64-2p-3f-v3",
 }
 
-COLOR_AGENT1 = (0, 0, 180, 255)      # blue: agent1
-COLOR_AGENT2 = (180, 0, 0, 255)      # red: agent2
-COLOR_TARGET = (0, 160, 0, 255)      # green: target POI
-COLOR_OTHER_POI = (110, 110, 110, 255)  # grey: non-target POIs
-COLOR_OBSTACLE = (50, 50, 50, 255)   # dark: obstacles
+COLOR_AGENT1 = (0, 0, 180, 255)         # blue: agent1
+COLOR_AGENT2 = (180, 0, 0, 255)         # red: agent2
+COLOR_MODEL_TARGET = (0, 160, 0, 255)   # green: model's chosen POI
+COLOR_OPTIMAL_POI = (0, 100, 220, 255)  # blue: cost-optimal POI
+COLOR_AGREE_POI = (0, 200, 200, 255)    # cyan: model and baseline agree
+COLOR_OTHER_POI = (110, 110, 110, 255)  # grey: other POIs
+COLOR_OBSTACLE = (50, 50, 50, 255)      # dark: obstacles
 
-PANEL_TITLES = ["Q-Learning", "DQN", "PPO", "Baseline"]
+PANEL_TITLES = ["Q-Learning", "DQN", "PPO"]
 
 # ---------------------------------------------------------------------------
 # Load navigation policies
@@ -93,49 +100,13 @@ def _load_qlearning(size_tag: str) -> PredictFn:
     return predict
 
 
-def _baseline_policy(nav_env: PoINavigationEnv) -> PredictFn:
-    """
-    Cost-optimal baseline: pick POI with lowest cost, greedy move toward it.
-    Returns composite action: target_idx*5 + move.
-    """
-    from cost_function import astar_distance, cost_optimal_baseline, DEFAULT_WEIGHTS
-
-    _MOVES = [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)]
-
-    def predict(obs: np.ndarray) -> int:
-        rows, cols = nav_env.grid_size
-        self_r = round(float(obs[0]) * max(rows - 1, 1))
-        self_c = round(float(obs[1]) * max(cols - 1, 1))
-        other_r = round(float(obs[2]) * max(rows - 1, 1))
-        other_c = round(float(obs[3]) * max(cols - 1, 1))
-        self_pos = (self_r, self_c)
-        other_pos = (other_r, other_c)
-
-        target_idx = cost_optimal_baseline(
-            nav_env._pois, self_pos, other_pos,
-            nav_env._obstacles, DEFAULT_WEIGHTS, nav_env.grid_size
-        )
-        target = nav_env._pois[target_idx]
-        obstacles = nav_env._obstacles
-
-        if self_pos == target:
-            return target_idx * 5 + 0  # NONE
-
-        best_move = 0
-        best_dist = astar_distance(self_pos, target, obstacles, nav_env.grid_size)
-        for move, (dr, dc) in enumerate(_MOVES):
-            nr, nc = self_r + dr, self_c + dc
-            if not (0 <= nr < rows and 0 <= nc < cols):
-                continue
-            if (nr, nc) in obstacles:
-                continue
-            d = astar_distance((nr, nc), target, obstacles, nav_env.grid_size)
-            if d < best_dist:
-                best_dist = d
-                best_move = move
-        return target_idx * 5 + best_move
-
-    return predict
+def _get_optimal_idx(nav_env: PoINavigationEnv) -> int:
+    """Return the cost-optimal POI index for the current env state."""
+    from cost_function import cost_optimal_baseline, DEFAULT_WEIGHTS
+    return cost_optimal_baseline(
+        nav_env._pois, nav_env._init_agent1_pos, nav_env._init_agent2_pos,
+        nav_env._obstacles, DEFAULT_WEIGHTS, nav_env.grid_size,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -146,24 +117,41 @@ def _make_badge_fn(
     nav_env: PoINavigationEnv,
     viewer: Viewer,
     panel_h: int,
+    optimal_idx: int,
 ) -> Callable:
-    """Return a _draw_badge function for one panel, using panel-local coordinates."""
+    """Return a _draw_badge function for one panel, using panel-local coordinates.
+
+    POI colours:
+      Green  — model's chosen target
+      Blue   — cost-optimal baseline target
+      Cyan   — both agree on this POI
+      Grey   — other POIs
+    """
     rows, cols = nav_env.grid_size
 
     def draw_badge(row: int, col: int, level: int) -> None:
         cell = (row, col)
         obstacles = nav_env._obstacles
-        target = nav_env._target_poi
+        model_target = nav_env._target_poi
+        optimal_poi = nav_env._pois[optimal_idx]
         pois = nav_env._pois
         a1 = nav_env._agent1_pos
         a2 = nav_env._agent2_pos
 
         if cell in obstacles:
             label, color = "#", COLOR_OBSTACLE
-        elif cell == target:
-            label, color = "T", COLOR_TARGET
         elif cell in pois:
-            label, color = f"P{pois.index(cell)+1}", COLOR_OTHER_POI
+            idx = pois.index(cell)
+            is_model = (cell == model_target)
+            is_optimal = (cell == optimal_poi)
+            if is_model and is_optimal:
+                label, color = f"P{idx+1}", COLOR_AGREE_POI
+            elif is_model:
+                label, color = f"P{idx+1}", COLOR_MODEL_TARGET
+            elif is_optimal:
+                label, color = f"P{idx+1}", COLOR_OPTIMAL_POI
+            else:
+                label, color = f"P{idx+1}", COLOR_OTHER_POI
         elif cell == a1:
             label, color = "1", COLOR_AGENT1
         elif cell == a2:
@@ -177,7 +165,7 @@ def _make_badge_fn(
         pyglet.text.Label(
             label,
             font_size=10,
-            bold=(cell == target),
+            bold=(cell == model_target or cell == optimal_poi),
             x=x,
             y=y,
             anchor_x="center",
@@ -218,6 +206,9 @@ def _sync_lbf(lbf: ForagingEnv, nav_env: PoINavigationEnv) -> None:
 # Main demo loop
 # ---------------------------------------------------------------------------
 
+N_PANELS = 3  # Q-Learning, DQN, PPO
+
+
 def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
     rows, cols = grid_size
     size_tag = str(rows)
@@ -225,24 +216,18 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
 
     panel_w = 1 + cols * (CELL_PX + 1)
     panel_h = 1 + rows * (CELL_PX + 1)
-    win_w = panel_w * 2
-    win_h = (panel_h + TITLE_H) * 2
+    win_w = panel_w * N_PANELS
+    win_h = panel_h + TITLE_H
 
-    # Panel offsets (ox, oy) — pyglet y=0 is bottom
-    # Layout: top-left=Q-Learning, top-right=DQN, bottom-left=PPO, bottom-right=Baseline
-    panel_offsets = [
-        (0,       panel_h + TITLE_H),   # top-left:     Q-Learning
-        (panel_w, panel_h + TITLE_H),   # top-right:    DQN
-        (0,       0),                   # bottom-left:  PPO
-        (panel_w, 0),                   # bottom-right: Baseline
-    ]
+    # Single row: Q-Learning | DQN | PPO  (pyglet y=0 is bottom)
+    panel_offsets = [(i * panel_w, 0) for i in range(N_PANELS)]
 
     # One PoINavigationEnv per panel (same scenario, independent step state)
-    nav_envs = [PoINavigationEnv(seed=42, grid_size=grid_size) for _ in range(4)]
+    nav_envs = [PoINavigationEnv(seed=42, grid_size=grid_size) for _ in range(N_PANELS)]
 
-    # Four lbforaging envs for rendering (share one Pyglet window)
+    # Three lbforaging envs for rendering (share one Pyglet window)
     lbf_envs_raw: list[tuple[gym.Env, ForagingEnv]] = []
-    for _ in range(4):
+    for _ in range(N_PANELS):
         e = gym.make(env_id, render_mode="human", allow_agent_on_food=True, allow_agent_on_agent=True)
         e.reset(seed=42)
         lbf = e.unwrapped
@@ -262,13 +247,14 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
 
     lbfs = [lbf for _, lbf in lbf_envs_raw]
 
-    # Load policies (Baseline uses nav_envs[3] for obstacle/target lookup)
     policies: list[PredictFn] = [
         _load_qlearning(size_tag),
         _load_dqn(size_tag),
         _load_ppo(size_tag),
-        _baseline_policy(nav_envs[3]),
     ]
+
+    # optimal_idxs[i] = cost-optimal POI index for panel i (updated each scenario reset)
+    optimal_idxs = [0] * N_PANELS
 
     def render_frame(badge_fns: list[Callable]) -> None:
         viewer.window.switch_to()
@@ -307,21 +293,28 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
             obs_pair, _ = nav_env.reset(seed=scenario_seed)
             obs_list.append(obs_pair)
 
+        # Compute cost-optimal POI index (same scenario → same result for all panels)
+        for i, nav_env in enumerate(nav_envs):
+            optimal_idxs[i] = _get_optimal_idx(nav_env)
+
         # Sync lbf state and build badge functions
         for lbf, nav_env in zip(lbfs, nav_envs):
             _sync_lbf(lbf, nav_env)
-        badge_fns = [_make_badge_fn(nav_env, viewer, panel_h) for nav_env in nav_envs]
+        badge_fns = [
+            _make_badge_fn(nav_env, viewer, panel_h, optimal_idxs[i])
+            for i, nav_env in enumerate(nav_envs)
+        ]
 
         print(f"\n--- Scenario {scenario} ({size_tag}x{size_tag}) ---")
         print(f"Agent1: {nav_envs[0]._agent1_pos}  Agent2: {nav_envs[0]._agent2_pos}")
-        print(f"Target POI: {nav_envs[0]._target_poi}  All POIs: {nav_envs[0]._pois}")
+        print(f"Optimal POI: {nav_envs[0]._pois[optimal_idxs[0]]}  All POIs: {nav_envs[0]._pois}")
         print(f"Obstacles: {len(nav_envs[0]._obstacles)} cells")
 
         render_frame(badge_fns)
         time.sleep(1)
 
         # Step all envs until all are done
-        done_flags = [False] * 4
+        done_flags = [False] * N_PANELS
         while not all(done_flags):
             if not viewer.isopen:
                 for e, _ in lbf_envs_raw:
@@ -344,7 +337,7 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
 
         results = [
             f"{PANEL_TITLES[i]}: {'arrived' if nav_envs[i]._agent1_pos == nav_envs[i]._target_poi and nav_envs[i]._agent2_pos == nav_envs[i]._target_poi else 'timeout'} ({nav_envs[i]._step_count} steps)"
-            for i in range(4)
+            for i in range(N_PANELS)
         ]
         print("  " + "  |  ".join(results))
 
@@ -366,7 +359,7 @@ def main() -> None:
     grid_size = (args.grid_size, args.grid_size)
     size_tag = str(args.grid_size)
     print("=" * 50)
-    print(f"ThessLink: 4-panel navigation ({size_tag}x{size_tag}) — Q-Learning | DQN | PPO | Baseline")
+    print(f"ThessLink: 3-panel navigation ({size_tag}x{size_tag}) — Q-Learning | DQN | PPO")
     print("=" * 50)
     n = args.scenarios
     print(f"Running {'infinite' if n == 0 else n} scenarios. Close window to exit.")
