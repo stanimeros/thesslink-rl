@@ -6,9 +6,11 @@ Four panels run the same scenario (same positions + obstacles) simultaneously,
 each driven by a different algorithm: Q-Learning, DQN, PPO, Baseline.
 
 Usage:
-  python demo.py                    # 5 scenarios
+  python demo.py                          # 5 scenarios, 64x64 grid
+  python demo.py --grid-size 8            # 8x8 grid
+  python demo.py --grid-size 32           # 32x32 grid
   python demo.py --scenarios 10
-  python demo.py --scenarios 0      # Infinite until window closed
+  python demo.py --scenarios 0            # Infinite until window closed
 """
 from __future__ import annotations
 
@@ -32,16 +34,23 @@ from poi_environment import PoINavigationEnv
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--scenarios", type=int, default=5, help="Scenarios to run (0=infinite until window closed)")
+parser.add_argument("--grid-size", type=int, choices=[8, 32, 64], default=64,
+                    help="Grid size to use (8, 32, or 64). Loads the corresponding trained models.")
 args = parser.parse_args()
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-ENV_ID = "Foraging-64x64-2p-3f-v3"
 MODEL_DIR = Path(__file__).parent / "models"
 CELL_PX = 4
 TITLE_H = 28
+
+_ENV_ID_MAP = {
+    8:  "Foraging-8x8-2p-3f-v3",
+    32: "Foraging-32x32-2p-3f-v3",
+    64: "Foraging-64x64-2p-3f-v3",
+}
 
 COLOR_AGENT1 = (0, 0, 180, 255)      # blue: agent1
 COLOR_AGENT2 = (180, 0, 0, 255)      # red: agent2
@@ -58,26 +67,26 @@ PANEL_TITLES = ["Q-Learning", "DQN", "PPO", "Baseline"]
 PredictFn = Callable[[np.ndarray], int]
 
 
-def _load_ppo() -> PredictFn:
+def _load_ppo(size_tag: str) -> PredictFn:
     from stable_baselines3 import PPO
-    model = PPO.load(str(MODEL_DIR / "ppo" / "nav_ppo"))
+    model = PPO.load(str(MODEL_DIR / "ppo" / f"nav_ppo_{size_tag}"))
     def predict(obs: np.ndarray) -> int:
         a, _ = model.predict(obs, deterministic=True)
         return int(a)
     return predict
 
 
-def _load_dqn() -> PredictFn:
+def _load_dqn(size_tag: str) -> PredictFn:
     from stable_baselines3 import DQN
-    model = DQN.load(str(MODEL_DIR / "dqn" / "nav_dqn"))
+    model = DQN.load(str(MODEL_DIR / "dqn" / f"nav_dqn_{size_tag}"))
     def predict(obs: np.ndarray) -> int:
         a, _ = model.predict(obs, deterministic=True)
         return int(a)
     return predict
 
 
-def _load_qlearning() -> PredictFn:
-    model_path = MODEL_DIR / "qlearning" / "nav_qtable.pkl"
+def _load_qlearning(size_tag: str) -> PredictFn:
+    model_path = MODEL_DIR / "qlearning" / f"nav_qtable_{size_tag}.pkl"
     with open(model_path, "rb") as f:
         q_table: dict = pickle.load(f)
     def predict(obs: np.ndarray) -> int:
@@ -93,7 +102,6 @@ def _baseline_policy(nav_env: PoINavigationEnv) -> PredictFn:
     from cost_function import astar_distance
 
     def predict(obs: np.ndarray) -> int:
-        # Determine which agent this obs belongs to by checking self_pos
         rows, cols = nav_env.grid_size
         self_r = round(float(obs[0]) * (rows - 1))
         self_c = round(float(obs[1]) * (cols - 1))
@@ -104,7 +112,6 @@ def _baseline_policy(nav_env: PoINavigationEnv) -> PredictFn:
         if self_pos == target:
             return 0  # NONE
 
-        # A*-guided greedy: pick action that minimises distance to target
         best_action = 0
         best_dist = astar_distance(self_pos, target, obstacles, nav_env.grid_size)
         for action, (dr, dc) in enumerate([(0,0),(-1,0),(1,0),(0,-1),(0,1)]):
@@ -202,8 +209,11 @@ def _sync_lbf(lbf: ForagingEnv, nav_env: PoINavigationEnv) -> None:
 # Main demo loop
 # ---------------------------------------------------------------------------
 
-def run_demo(n_scenarios: int) -> None:
-    rows, cols = 64, 64
+def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
+    rows, cols = grid_size
+    size_tag = str(rows)
+    env_id = _ENV_ID_MAP[rows]
+
     panel_w = 1 + cols * (CELL_PX + 1)
     panel_h = 1 + rows * (CELL_PX + 1)
     win_w = panel_w * 2
@@ -219,12 +229,12 @@ def run_demo(n_scenarios: int) -> None:
     ]
 
     # One PoINavigationEnv per panel (same scenario, independent step state)
-    nav_envs = [PoINavigationEnv(seed=42) for _ in range(4)]
+    nav_envs = [PoINavigationEnv(seed=42, grid_size=grid_size) for _ in range(4)]
 
     # Four lbforaging envs for rendering (share one Pyglet window)
     lbf_envs_raw: list[tuple[gym.Env, ForagingEnv]] = []
     for _ in range(4):
-        e = gym.make(ENV_ID, render_mode="human", allow_agent_on_food=True, allow_agent_on_agent=True)
+        e = gym.make(env_id, render_mode="human", allow_agent_on_food=True, allow_agent_on_agent=True)
         e.reset(seed=42)
         lbf = e.unwrapped
         assert isinstance(lbf, ForagingEnv)
@@ -245,9 +255,9 @@ def run_demo(n_scenarios: int) -> None:
 
     # Load policies (Baseline uses nav_envs[3] for obstacle/target lookup)
     policies: list[PredictFn] = [
-        _load_qlearning(),
-        _load_dqn(),
-        _load_ppo(),
+        _load_qlearning(size_tag),
+        _load_dqn(size_tag),
+        _load_ppo(size_tag),
         _baseline_policy(nav_envs[3]),
     ]
 
@@ -293,7 +303,7 @@ def run_demo(n_scenarios: int) -> None:
             _sync_lbf(lbf, nav_env)
         badge_fns = [_make_badge_fn(nav_env, viewer, panel_h) for nav_env in nav_envs]
 
-        print(f"\n--- Scenario {scenario} ---")
+        print(f"\n--- Scenario {scenario} ({size_tag}x{size_tag}) ---")
         print(f"Agent1: {nav_envs[0]._agent1_pos}  Agent2: {nav_envs[0]._agent2_pos}")
         print(f"Target POI: {nav_envs[0]._target_poi}  All POIs: {nav_envs[0]._pois}")
         print(f"Obstacles: {len(nav_envs[0]._obstacles)} cells")
@@ -344,12 +354,14 @@ def run_demo(n_scenarios: int) -> None:
 
 
 def main() -> None:
+    grid_size = (args.grid_size, args.grid_size)
+    size_tag = str(args.grid_size)
     print("=" * 50)
-    print("ThessLink: 4-panel navigation (Q-Learning | DQN | PPO | Baseline)")
+    print(f"ThessLink: 4-panel navigation ({size_tag}x{size_tag}) — Q-Learning | DQN | PPO | Baseline")
     print("=" * 50)
     n = args.scenarios
     print(f"Running {'infinite' if n == 0 else n} scenarios. Close window to exit.")
-    run_demo(n)
+    run_demo(n, grid_size=grid_size)
 
 
 if __name__ == "__main__":

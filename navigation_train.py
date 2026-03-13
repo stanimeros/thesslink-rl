@@ -10,10 +10,10 @@ with static obstacles. Supports three algorithm categories:
   Policy Gradient  : PPO         (--algo ppo)   [default]
 
 Usage:
-  python navigation_train.py                        # PPO, 200k steps
-  python navigation_train.py --algo dqn --steps 200000
-  python navigation_train.py --algo qlearning --episodes 500000
-  python navigation_train.py --no-train             # evaluate only
+  python navigation_train.py                              # PPO, 64x64, 200k steps
+  python navigation_train.py --algo dqn --grid-size 32
+  python navigation_train.py --algo qlearning --grid-size 8 --episodes 200000
+  python navigation_train.py --no-train --grid-size 32   # evaluate only
   python navigation_train.py --no-plot
 """
 from __future__ import annotations
@@ -38,13 +38,14 @@ def _eval_navigation(
     predict_fn,
     n_episodes: int = 200,
     seed: int = 99,
+    grid_size: tuple[int, int] = (64, 64),
 ) -> dict:
     """
     Evaluate a navigation policy.
     predict_fn(obs) -> action  (called once per agent per step)
     Returns dict with mean_reward, success_rate, mean_steps, agreement.
     """
-    env = PoINavigationEnv(seed=seed)
+    env = PoINavigationEnv(seed=seed, grid_size=grid_size)
     rewards, successes, steps_list, agreements = [], [], [], []
 
     for _ in range(n_episodes):
@@ -121,21 +122,22 @@ def train_ppo(
     seed: int = 42,
     eval_freq: int = 10_000,
     plot_path: Path | None = None,
+    grid_size: tuple[int, int] = (64, 64),
 ) -> None:
     from stable_baselines3 import PPO
     from stable_baselines3.common.callbacks import BaseCallback
 
+    size_tag = str(grid_size[0])
     save_dir = MODEL_DIR / "ppo"
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # Wrap PoINavigationEnv for SB3: flatten obs, single-agent view
     import gymnasium as gym
 
     class _NavWrapper(gym.Env):
         """Wraps PoINavigationEnv as single-agent env (shared policy, agent1 view)."""
         def __init__(self):
             super().__init__()
-            self._env = PoINavigationEnv(seed=seed)
+            self._env = PoINavigationEnv(seed=seed, grid_size=grid_size)
             self.observation_space = self._env.observation_space
             self.action_space = self._env.action_space
             self._obs2 = None
@@ -146,8 +148,7 @@ def train_ppo(
             return obs1, info
 
         def step(self, action):
-            # Agent2 uses same policy deterministically (greedy via stored obs)
-            a2 = action  # mirror action for simplicity in wrapper; real eval uses predict
+            a2 = action
             (obs1, obs2), reward, term, trunc, info = self._env.step((action, a2))
             self._obs2 = obs2
             return obs1, reward, term, trunc, info
@@ -162,7 +163,7 @@ def train_ppo(
                 def predict(obs):
                     a, _ = self.model.predict(obs, deterministic=True)
                     return int(a)
-                stats = _eval_navigation(predict, n_episodes=100)
+                stats = _eval_navigation(predict, n_episodes=100, grid_size=grid_size)
                 reward_history.append(stats["mean_reward"])
                 success_history.append(stats["success_rate"])
                 agreement_history.append(stats["agreement"])
@@ -177,18 +178,18 @@ def train_ppo(
         def _on_training_end(self):
             if plot_path and reward_history:
                 _plot(step_history, reward_history, success_history, agreement_history,
-                      "PPO", "tab:blue", plot_path)
+                      f"PPO {size_tag}x{size_tag}", "tab:blue", plot_path)
 
     model = PPO("MlpPolicy", env, learning_rate=3e-4, n_steps=128, batch_size=64,
                 n_epochs=10, gamma=0.99, verbose=1, seed=seed)
     model.learn(total_timesteps=total_timesteps, callback=_Callback())
-    model.save(str(save_dir / "nav_ppo"))
-    print(f"Saved PPO model to {save_dir / 'nav_ppo'}")
+    model.save(str(save_dir / f"nav_ppo_{size_tag}"))
+    print(f"Saved PPO model to {save_dir / f'nav_ppo_{size_tag}'}")
 
     def predict(obs):
         a, _ = model.predict(obs, deterministic=True)
         return int(a)
-    stats = _eval_navigation(predict, n_episodes=500)
+    stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size)
     print(f"Final eval — success: {stats['success_rate']:.1%}  reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
 
 
@@ -201,18 +202,20 @@ def train_dqn(
     seed: int = 42,
     eval_freq: int = 10_000,
     plot_path: Path | None = None,
+    grid_size: tuple[int, int] = (64, 64),
 ) -> None:
     from stable_baselines3 import DQN
     from stable_baselines3.common.callbacks import BaseCallback
     import gymnasium as gym
 
+    size_tag = str(grid_size[0])
     save_dir = MODEL_DIR / "dqn"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     class _NavWrapper(gym.Env):
         def __init__(self):
             super().__init__()
-            self._env = PoINavigationEnv(seed=seed)
+            self._env = PoINavigationEnv(seed=seed, grid_size=grid_size)
             self.observation_space = self._env.observation_space
             self.action_space = self._env.action_space
 
@@ -234,7 +237,7 @@ def train_dqn(
                 def predict(obs):
                     a, _ = self.model.predict(obs, deterministic=True)
                     return int(a)
-                stats = _eval_navigation(predict, n_episodes=100)
+                stats = _eval_navigation(predict, n_episodes=100, grid_size=grid_size)
                 reward_history.append(stats["mean_reward"])
                 success_history.append(stats["success_rate"])
                 agreement_history.append(stats["agreement"])
@@ -249,18 +252,18 @@ def train_dqn(
         def _on_training_end(self):
             if plot_path and reward_history:
                 _plot(step_history, reward_history, success_history, agreement_history,
-                      "DQN", "tab:green", plot_path)
+                      f"DQN {size_tag}x{size_tag}", "tab:green", plot_path)
 
     model = DQN("MlpPolicy", env, learning_rate=1e-4, buffer_size=50_000,
                 learning_starts=1000, batch_size=64, gamma=0.99, verbose=1, seed=seed)
     model.learn(total_timesteps=total_timesteps, callback=_Callback())
-    model.save(str(save_dir / "nav_dqn"))
-    print(f"Saved DQN model to {save_dir / 'nav_dqn'}")
+    model.save(str(save_dir / f"nav_dqn_{size_tag}"))
+    print(f"Saved DQN model to {save_dir / f'nav_dqn_{size_tag}'}")
 
     def predict(obs):
         a, _ = model.predict(obs, deterministic=True)
         return int(a)
-    stats = _eval_navigation(predict, n_episodes=500)
+    stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size)
     print(f"Final eval — success: {stats['success_rate']:.1%}  reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
 
 
@@ -292,21 +295,22 @@ def train_qlearning(
     epsilon_start: float = 1.0,
     epsilon_end: float = 0.05,
     epsilon_decay: float = 0.99999,
+    grid_size: tuple[int, int] = (64, 64),
 ) -> None:
+    size_tag = str(grid_size[0])
     save_dir = MODEL_DIR / "qlearning"
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # Use dict-based Q-table (sparse) — dense table is too large for 19-dim obs
     from collections import defaultdict
     q_table: dict[int, np.ndarray] = defaultdict(lambda: np.zeros(_NAV_ACTIONS, dtype=np.float32))
 
-    env = PoINavigationEnv(seed=seed)
+    env = PoINavigationEnv(seed=seed, grid_size=grid_size)
     rng = np.random.default_rng(seed)
     epsilon = epsilon_start
 
     reward_history, success_history, agreement_history, step_history = [], [], [], []
 
-    print(f"Training Q-Learning (navigation) for {total_episodes} episodes...")
+    print(f"Training Q-Learning (navigation, {size_tag}x{size_tag}) for {total_episodes} episodes...")
 
     for episode in range(total_episodes):
         (obs1, obs2), _ = env.reset()
@@ -341,7 +345,7 @@ def train_qlearning(
         if (episode + 1) % eval_freq == 0:
             def predict(obs):
                 return int(np.argmax(q_table[_discretize_nav(obs)]))
-            stats = _eval_navigation(predict, n_episodes=100)
+            stats = _eval_navigation(predict, n_episodes=100, grid_size=grid_size)
             reward_history.append(stats["mean_reward"])
             success_history.append(stats["success_rate"])
             agreement_history.append(stats["agreement"])
@@ -352,18 +356,18 @@ def train_qlearning(
                 f"  ε={epsilon:.4f}"
             )
 
-    model_path = save_dir / "nav_qtable.pkl"
+    model_path = save_dir / f"nav_qtable_{size_tag}.pkl"
     with open(model_path, "wb") as f:
         pickle.dump(dict(q_table), f)
     print(f"Saved Q-table to {model_path}")
 
     if plot_path and reward_history:
         _plot(step_history, reward_history, success_history, agreement_history,
-              "Q-Learning", "tab:orange", plot_path)
+              f"Q-Learning {size_tag}x{size_tag}", "tab:orange", plot_path)
 
     def predict(obs):
         return int(np.argmax(q_table[_discretize_nav(obs)]))
-    stats = _eval_navigation(predict, n_episodes=500)
+    stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size)
     print(f"Final eval — success: {stats['success_rate']:.1%}  reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
 
 
@@ -371,23 +375,26 @@ def train_qlearning(
 # Suggest helpers (for demo.py)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def suggest_nav_ppo(obs: np.ndarray) -> int:
+def suggest_nav_ppo(obs: np.ndarray, grid_size: tuple[int, int] = (64, 64)) -> int:
     """Load PPO navigation model and predict action for one agent."""
     from stable_baselines3 import PPO
-    model = PPO.load(str(MODEL_DIR / "ppo" / "nav_ppo"))
+    size_tag = str(grid_size[0])
+    model = PPO.load(str(MODEL_DIR / "ppo" / f"nav_ppo_{size_tag}"))
     a, _ = model.predict(obs, deterministic=True)
     return int(a)
 
 
-def suggest_nav_dqn(obs: np.ndarray) -> int:
+def suggest_nav_dqn(obs: np.ndarray, grid_size: tuple[int, int] = (64, 64)) -> int:
     from stable_baselines3 import DQN
-    model = DQN.load(str(MODEL_DIR / "dqn" / "nav_dqn"))
+    size_tag = str(grid_size[0])
+    model = DQN.load(str(MODEL_DIR / "dqn" / f"nav_dqn_{size_tag}"))
     a, _ = model.predict(obs, deterministic=True)
     return int(a)
 
 
-def suggest_nav_qlearning(obs: np.ndarray) -> int:
-    model_path = MODEL_DIR / "qlearning" / "nav_qtable.pkl"
+def suggest_nav_qlearning(obs: np.ndarray, grid_size: tuple[int, int] = (64, 64)) -> int:
+    size_tag = str(grid_size[0])
+    model_path = MODEL_DIR / "qlearning" / f"nav_qtable_{size_tag}.pkl"
     with open(model_path, "rb") as f:
         q_table = pickle.load(f)
     state = _discretize_nav(obs)
@@ -401,6 +408,8 @@ def suggest_nav_qlearning(obs: np.ndarray) -> int:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--algo", choices=["ppo", "dqn", "qlearning"], default="ppo")
+    parser.add_argument("--grid-size", type=int, choices=[8, 32, 64], default=64,
+                        help="Grid size (8, 32, or 64)")
     parser.add_argument("--steps", type=int, default=200_000, help="Timesteps (ppo/dqn)")
     parser.add_argument("--episodes", type=int, default=500_000, help="Episodes (qlearning)")
     parser.add_argument("--seed", type=int, default=42)
@@ -408,34 +417,36 @@ def main():
     parser.add_argument("--no-plot", action="store_true")
     args = parser.parse_args()
 
-    plot_path = None if args.no_plot else PLOT_DIR / f"training_plot_nav_{args.algo}.png"
+    grid_size = (args.grid_size, args.grid_size)
+    size_tag = str(args.grid_size)
+    plot_path = None if args.no_plot else PLOT_DIR / f"training_plot_nav_{args.algo}_{size_tag}.png"
 
     if args.no_train:
-        print(f"Evaluating {args.algo} navigation model...")
+        print(f"Evaluating {args.algo} navigation model ({size_tag}x{size_tag})...")
         if args.algo == "ppo":
             from stable_baselines3 import PPO
-            model = PPO.load(str(MODEL_DIR / "ppo" / "nav_ppo"))
+            model = PPO.load(str(MODEL_DIR / "ppo" / f"nav_ppo_{size_tag}"))
             predict = lambda obs: int(model.predict(obs, deterministic=True)[0])
         elif args.algo == "dqn":
             from stable_baselines3 import DQN
-            model = DQN.load(str(MODEL_DIR / "dqn" / "nav_dqn"))
+            model = DQN.load(str(MODEL_DIR / "dqn" / f"nav_dqn_{size_tag}"))
             predict = lambda obs: int(model.predict(obs, deterministic=True)[0])
         else:
-            model_path = MODEL_DIR / "qlearning" / "nav_qtable.pkl"
+            model_path = MODEL_DIR / "qlearning" / f"nav_qtable_{size_tag}.pkl"
             with open(model_path, "rb") as f:
                 q_table = pickle.load(f)
             predict = lambda obs: int(np.argmax(q_table.get(_discretize_nav(obs), np.zeros(_NAV_ACTIONS))))
-        stats = _eval_navigation(predict, n_episodes=500)
+        stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size)
         print(f"Success: {stats['success_rate']:.1%}  Reward: {stats['mean_reward']:.3f}  Steps: {stats['mean_steps']:.1f}  Agreement: {stats['agreement']:.1%}")
         return
 
-    print(f"Training navigation with {args.algo.upper()}...")
+    print(f"Training navigation with {args.algo.upper()} on {size_tag}x{size_tag} grid...")
     if args.algo == "ppo":
-        train_ppo(total_timesteps=args.steps, seed=args.seed, plot_path=plot_path)
+        train_ppo(total_timesteps=args.steps, seed=args.seed, plot_path=plot_path, grid_size=grid_size)
     elif args.algo == "dqn":
-        train_dqn(total_timesteps=args.steps, seed=args.seed, plot_path=plot_path)
+        train_dqn(total_timesteps=args.steps, seed=args.seed, plot_path=plot_path, grid_size=grid_size)
     else:
-        train_qlearning(total_episodes=args.episodes, seed=args.seed, plot_path=plot_path)
+        train_qlearning(total_episodes=args.episodes, seed=args.seed, plot_path=plot_path, grid_size=grid_size)
 
 
 if __name__ == "__main__":
