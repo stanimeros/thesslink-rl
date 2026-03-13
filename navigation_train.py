@@ -112,9 +112,9 @@ def _save_history(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def train_ppo(
-    total_timesteps: int = 200_000,
+    total_timesteps: int = 500_000,
     seed: int = 42,
-    eval_freq: int = 10_000,
+    eval_freq: int = 25_000,
     grid_size: tuple[int, int] = (64, 64),
 ) -> None:
     from stable_baselines3 import PPO
@@ -126,11 +126,14 @@ def train_ppo(
 
     import gymnasium as gym
 
+    # max_steps scales with grid: enough room to navigate with obstacles
+    max_steps = max(300, grid_size[0] * grid_size[1] // 2)
+
     class _NavWrapper(gym.Env):
         """Wraps PoINavigationEnv as single-agent env (shared policy, agent1 view)."""
         def __init__(self):
             super().__init__()
-            self._env = PoINavigationEnv(seed=seed, grid_size=grid_size)
+            self._env = PoINavigationEnv(seed=seed, grid_size=grid_size, max_steps=max_steps)
             self.observation_space = self._env.observation_space
             self.action_space = self._env.action_space
 
@@ -169,7 +172,9 @@ def train_ppo(
                 _save_history(step_history, reward_history, cost_success_history, agreement_history,
                               "ppo", size_tag)
 
-    model = PPO("MlpPolicy", env, learning_rate=1e-4, n_steps=128, batch_size=64,
+    # n_steps must be >= max_steps so PPO sees complete episodes in each rollout
+    n_steps = max(512, max_steps)
+    model = PPO("MlpPolicy", env, learning_rate=3e-4, n_steps=n_steps, batch_size=128,
                 n_epochs=10, gamma=0.99, max_grad_norm=0.5, clip_range_vf=10.0,
                 verbose=1, seed=seed)
     model.learn(total_timesteps=total_timesteps, callback=_Callback())
@@ -188,9 +193,9 @@ def train_ppo(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def train_dqn(
-    total_timesteps: int = 200_000,
+    total_timesteps: int = 500_000,
     seed: int = 42,
-    eval_freq: int = 10_000,
+    eval_freq: int = 25_000,
     grid_size: tuple[int, int] = (64, 64),
 ) -> None:
     from stable_baselines3 import DQN
@@ -201,10 +206,12 @@ def train_dqn(
     save_dir = MODEL_DIR / "dqn"
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    max_steps = max(300, grid_size[0] * grid_size[1] // 2)
+
     class _NavWrapper(gym.Env):
         def __init__(self):
             super().__init__()
-            self._env = PoINavigationEnv(seed=seed, grid_size=grid_size)
+            self._env = PoINavigationEnv(seed=seed, grid_size=grid_size, max_steps=max_steps)
             self.observation_space = self._env.observation_space
             self.action_space = self._env.action_space
 
@@ -243,8 +250,11 @@ def train_dqn(
                 _save_history(step_history, reward_history, cost_success_history, agreement_history,
                               "dqn", size_tag)
 
-    model = DQN("MlpPolicy", env, learning_rate=1e-4, buffer_size=50_000,
-                learning_starts=1000, batch_size=64, gamma=0.99, verbose=1, seed=seed)
+    # exploration_fraction=0.3 keeps ε-greedy exploration for 150k steps (at 500k total)
+    model = DQN("MlpPolicy", env, learning_rate=1e-4, buffer_size=100_000,
+                learning_starts=1000, batch_size=64, gamma=0.99,
+                exploration_fraction=0.3, exploration_final_eps=0.05,
+                verbose=1, seed=seed)
     model.learn(total_timesteps=total_timesteps, callback=_Callback())
     model.save(str(save_dir / f"nav_dqn_{size_tag}"))
     print(f"Saved DQN model to {save_dir / f'nav_dqn_{size_tag}'}")
@@ -368,7 +378,7 @@ def main():
     parser.add_argument("--algo", choices=["ppo", "dqn", "qlearning"], default="ppo")
     parser.add_argument("--grid-size", type=int, choices=[8, 32, 64], default=8,
                         help="Grid size (8, 32, or 64)")
-    parser.add_argument("--steps", type=int, default=200_000, help="Timesteps (ppo/dqn)")
+    parser.add_argument("--steps", type=int, default=500_000, help="Timesteps (ppo/dqn)")
     parser.add_argument("--episodes", type=int, default=500_000, help="Episodes (qlearning)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no-train", action="store_true")
