@@ -38,7 +38,7 @@ from poi_environment import PoINavigationEnv
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--scenarios", type=int, default=5, help="Scenarios to run (0=infinite until window closed)")
-parser.add_argument("--grid-size", type=int, choices=[8, 32, 64], default=64,
+parser.add_argument("--grid-size", type=int, choices=[8, 32, 64], default=8,
                     help="Grid size to use (8, 32, or 64). Loads the corresponding trained models.")
 args = parser.parse_args()
 

@@ -261,7 +261,7 @@ def train_dqn(
 # ─────────────────────────────────────────────────────────────────────────────
 
 _NAV_BINS = 3
-_NAV_OBS_DIM = 19  # self(2)+other(2)+costs*3(15)
+_NAV_OBS_DIM = 27  # self(2)+other(2)+walls_self(4)+walls_other(4)+costs*3(15)
 _NAV_ACTIONS = 15  # composite: target_idx*5 + move
 _NAV_STATE_SIZE = _NAV_BINS ** _NAV_OBS_DIM  # tabular Q-learning impractical at this size
 
@@ -366,7 +366,7 @@ def train_qlearning(
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--algo", choices=["ppo", "dqn", "qlearning"], default="ppo")
-    parser.add_argument("--grid-size", type=int, choices=[8, 32, 64], default=64,
+    parser.add_argument("--grid-size", type=int, choices=[8, 32, 64], default=8,
                         help="Grid size (8, 32, or 64)")
     parser.add_argument("--steps", type=int, default=200_000, help="Timesteps (ppo/dqn)")
     parser.add_argument("--episodes", type=int, default=500_000, help="Episodes (qlearning)")

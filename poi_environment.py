@@ -5,8 +5,10 @@ Two symmetric agents (agent1, agent2) share a policy. The policy chooses which
 POI to navigate to (cost-optimal) and both agents navigate there. Target can
 be re-selected each step.
 
-Observation (per agent, 19 floats):
-    self_pos (2) + other_pos (2) + cost_components × 3 POIs (15)
+Observation (per agent, 27 floats):
+    self_pos (2) + other_pos (2) + wall_bits_self (4) + wall_bits_other (4)
+    + cost_components × 3 POIs (15)
+    Wall bits encode blocked N/S/W/E directions, preventing deterministic loops.
     Cost components use BFS distances; policy infers best POI from these.
 Action: Discrete(15) — composite (target_idx, move): target_idx ∈ {0,1,2}, move ∈ {NONE,N,S,W,E}
 Reward: shared — -cost - step_penalty for chosen target POI
@@ -25,6 +27,21 @@ from cost_function import DEFAULT_WEIGHTS
 # Movement deltas: NONE, NORTH, SOUTH, WEST, EAST
 _MOVES = [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)]
 _DIRS = _MOVES[1:]  # cardinal directions only
+
+
+def _wall_bits(
+    pos: tuple[int, int],
+    obstacles: FrozenSet[tuple[int, int]],
+    rows: int,
+    cols: int,
+) -> list[float]:
+    """Return 4 floats (N, S, W, E): 1.0 if direction is blocked, 0.0 otherwise."""
+    return [
+        1.0 if not (0 <= pos[0] + dr < rows and 0 <= pos[1] + dc < cols)
+               or (pos[0] + dr, pos[1] + dc) in obstacles
+        else 0.0
+        for dr, dc in _DIRS
+    ]
 
 
 def _bfs_dist_map(
@@ -56,16 +73,22 @@ def _build_nav_obs_bfs(
     other_pos: tuple[int, int],
     poi_dist_maps: list[dict[tuple[int, int], float]],
     grid_size: tuple[int, int],
+    obstacles: FrozenSet[tuple[int, int]],
 ) -> np.ndarray:
     """
-    Build 19-float observation: self_pos(2) + other_pos(2) + cost_components×3(15).
-    Policy chooses target from cost components.
+    Build 27-float observation:
+      self_pos(2) + other_pos(2) + wall_bits_self(4) + wall_bits_other(4)
+      + cost_components×3_POIs(15)
+    Wall bits encode which of N/S/W/E directions are blocked for each agent,
+    preventing the model from getting stuck in deterministic loops at obstacles.
     """
     rows, cols = grid_size
     max_dist = float(rows + cols)
     self_norm = np.array([self_pos[0] / max(rows - 1, 1), self_pos[1] / max(cols - 1, 1)], dtype=np.float32)
     other_norm = np.array([other_pos[0] / max(rows - 1, 1), other_pos[1] / max(cols - 1, 1)], dtype=np.float32)
-    parts = [self_norm, other_norm]
+    walls_self = np.array(_wall_bits(self_pos, obstacles, rows, cols), dtype=np.float32)
+    walls_other = np.array(_wall_bits(other_pos, obstacles, rows, cols), dtype=np.float32)
+    parts = [self_norm, other_norm, walls_self, walls_other]
     for dist_map in poi_dist_maps:
         dist_s = min(dist_map.get(self_pos, float("inf")), max_dist)
         dist_o = min(dist_map.get(other_pos, float("inf")), max_dist)
@@ -103,9 +126,10 @@ class PoINavigationEnv(gym.Env):
         self.max_steps = max_steps
         self.weights = DEFAULT_WEIGHTS if weights is None else weights
 
-        # Observation: self_pos(2) + other_pos(2) + cost_components*3(15) = 19
+        # Observation: self_pos(2) + other_pos(2) + wall_bits_self(4) + wall_bits_other(4)
+        #              + cost_components*3(15) = 27
         self.observation_space = gym.spaces.Box(
-            low=0.0, high=1.0, shape=(19,), dtype=np.float32
+            low=0.0, high=1.0, shape=(27,), dtype=np.float32
         )
         # Composite: target_idx*5 + move (target_idx 0-2, move NONE/N/S/W/E 0-4)
         self.action_space = gym.spaces.Discrete(15)
@@ -219,14 +243,14 @@ class PoINavigationEnv(gym.Env):
         return self._get_obs(), {}
 
     def _get_obs(self) -> tuple[np.ndarray, np.ndarray]:
-        """Returns (obs_agent1, obs_agent2) using BFS distances (no target_onehot)."""
+        """Returns (obs_agent1, obs_agent2) using BFS distances + wall bits."""
         obs1 = _build_nav_obs_bfs(
             self._agent1_pos, self._agent2_pos,
-            self._poi_dist_maps, self.grid_size
+            self._poi_dist_maps, self.grid_size, self._obstacles,
         )
         obs2 = _build_nav_obs_bfs(
             self._agent2_pos, self._agent1_pos,
-            self._poi_dist_maps, self.grid_size
+            self._poi_dist_maps, self.grid_size, self._obstacles,
         )
         return obs1, obs2
 
