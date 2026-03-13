@@ -27,7 +27,20 @@ from cost_function import cost_optimal_baseline, DEFAULT_WEIGHTS
 from poi_environment import PoINavigationEnv
 
 MODEL_DIR = Path(__file__).parent / "models"
-PLOT_DIR = Path(__file__).parent
+PLOT_DIR = Path(__file__).parent  # legacy; prefer model folders
+
+
+def get_history_path(algo: str, grid_size: int | str) -> Path:
+    """Path to training_history_*.pkl in the model folder."""
+    tag = str(grid_size)
+    return MODEL_DIR / algo / f"training_history_{algo}_{tag}.pkl"
+
+
+def get_plot_path(algo: str, grid_size: int | str) -> Path:
+    """Path to training_plot_*.png in the model folder."""
+    tag = str(grid_size)
+    return MODEL_DIR / algo / f"training_plot_{algo}_{tag}.png"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared helpers
@@ -90,7 +103,9 @@ def _save_history(
     algo: str,
     size_tag: str,
 ) -> None:
-    path = PLOT_DIR / f"training_history_{algo}_{size_tag}.pkl"
+    save_dir = MODEL_DIR / algo
+    save_dir.mkdir(parents=True, exist_ok=True)
+    path = save_dir / f"training_history_{algo}_{size_tag}.pkl"
     with open(path, "wb") as f:
         pickle.dump(
             {"steps": steps, "rewards": rewards, "cost_success": cost_successes, "agreement": agreements},
