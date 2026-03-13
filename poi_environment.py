@@ -252,8 +252,9 @@ class PoINavigationEnv(gym.Env):
             _bfs_dist_map(poi, self._obstacles, self.rows, self.cols) for poi in self._pois
         ]
         self._step_count = 0
-        self._prev_dist1 = self._target_dist_map.get(self._agent1_pos, float("inf"))
-        self._prev_dist2 = self._target_dist_map.get(self._agent2_pos, float("inf"))
+        max_dist = float(self.rows + self.cols)
+        self._prev_dist1 = min(self._target_dist_map.get(self._agent1_pos, float("inf")), max_dist)
+        self._prev_dist2 = min(self._target_dist_map.get(self._agent2_pos, float("inf")), max_dist)
 
         return self._get_obs(), {}
 
@@ -291,11 +292,13 @@ class PoINavigationEnv(gym.Env):
         self._step_count += 1
 
         # O(1) distance lookup from cached BFS map
-        dist1 = self._target_dist_map.get(self._agent1_pos, float("inf"))
-        dist2 = self._target_dist_map.get(self._agent2_pos, float("inf"))
         max_dist = float(self.rows + self.cols)
+        dist1 = min(self._target_dist_map.get(self._agent1_pos, float("inf")), max_dist)
+        dist2 = min(self._target_dist_map.get(self._agent2_pos, float("inf")), max_dist)
+        prev1 = min(self._prev_dist1, max_dist)
+        prev2 = min(self._prev_dist2, max_dist)
 
-        progress = (self._prev_dist1 - dist1 + self._prev_dist2 - dist2) / max_dist
+        progress = (prev1 - dist1 + prev2 - dist2) / max_dist
         self._prev_dist1 = dist1
         self._prev_dist2 = dist2
 
@@ -316,6 +319,9 @@ class PoINavigationEnv(gym.Env):
             ttm = 0.0
             terminal_cost = sum(w * v for w, v in zip(self.weights, (te_a, te_h, energy, privacy, ttm)))
             reward += -terminal_cost
+
+        # Clip reward to prevent NaN from extreme values in PPO
+        reward = float(np.clip(reward, -10.0, 10.0))
 
         info = {
             "agent1_pos": self._agent1_pos,

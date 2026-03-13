@@ -180,8 +180,9 @@ def train_ppo(
                 _plot(step_history, reward_history, success_history, agreement_history,
                       f"PPO {size_tag}x{size_tag}", "tab:blue", plot_path)
 
-    model = PPO("MlpPolicy", env, learning_rate=3e-4, n_steps=128, batch_size=64,
-                n_epochs=10, gamma=0.99, verbose=1, seed=seed)
+    model = PPO("MlpPolicy", env, learning_rate=1e-4, n_steps=128, batch_size=64,
+                n_epochs=10, gamma=0.99, max_grad_norm=0.5, clip_range_vf=10.0,
+                verbose=1, seed=seed)
     model.learn(total_timesteps=total_timesteps, callback=_Callback())
     model.save(str(save_dir / f"nav_ppo_{size_tag}"))
     print(f"Saved PPO model to {save_dir / f'nav_ppo_{size_tag}'}")
