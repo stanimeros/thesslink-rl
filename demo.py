@@ -47,8 +47,9 @@ args = parser.parse_args()
 # ---------------------------------------------------------------------------
 
 MODEL_DIR = Path(__file__).parent / "models"
-CELL_PX = 4
 TITLE_H = 28
+
+_CELL_PX_MAP = {8: 28, 32: 10, 64: 4}
 
 _ENV_ID_MAP = {
     8:  "Foraging-8x8-2p-3f-v3",
@@ -176,13 +177,22 @@ def _make_badge_fn(
     return draw_badge
 
 
-def _draw_panel(viewer: Viewer, lbf: ForagingEnv, ox: int, oy: int, panel_h: int) -> None:
-    """Draw one grid panel at pixel offset (ox, oy)."""
+def _draw_panel(
+    viewer: Viewer,
+    lbf: ForagingEnv,
+    nav_env: PoINavigationEnv,
+    ox: int,
+    oy: int,
+    panel_h: int,
+) -> None:
+    """Draw one grid panel at pixel offset (ox, oy), including obstacles."""
     real_height = viewer.height
     viewer.height = panel_h
     glPushMatrix()
     glTranslatef(ox, oy, 0)
     viewer._draw_grid()
+    for (r, c) in nav_env._obstacles:
+        viewer._draw_cell_fill(r, c, 0.2, 0.2, 0.2, 1.0)
     viewer._draw_food(lbf)
     viewer._draw_players(lbf)
     glPopMatrix()
@@ -214,8 +224,9 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
     size_tag = str(rows)
     env_id = _ENV_ID_MAP[rows]
 
-    panel_w = 1 + cols * (CELL_PX + 1)
-    panel_h = 1 + rows * (CELL_PX + 1)
+    cell_px = _CELL_PX_MAP.get(rows, 4)
+    panel_w = 1 + cols * (cell_px + 1)
+    panel_h = 1 + rows * (cell_px + 1)
     win_w = panel_w * N_PANELS
     win_h = panel_h + TITLE_H
 
@@ -223,7 +234,9 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
     panel_offsets = [(i * panel_w, 0) for i in range(N_PANELS)]
 
     # One PoINavigationEnv per panel (same scenario, independent step state)
-    nav_envs = [PoINavigationEnv(seed=42, grid_size=grid_size) for _ in range(N_PANELS)]
+    # Use a generous max_steps so agents have enough time to navigate
+    max_steps = max(200, rows * cols)
+    nav_envs = [PoINavigationEnv(seed=42, grid_size=grid_size, max_steps=max_steps) for _ in range(N_PANELS)]
 
     # Three lbforaging envs for rendering (share one Pyglet window)
     lbf_envs_raw: list[tuple[gym.Env, ForagingEnv]] = []
@@ -238,7 +251,7 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
     lbf_envs_raw[0][1]._init_render()
     viewer = lbf_envs_raw[0][1].viewer
     assert isinstance(viewer, Viewer)
-    viewer.grid_size = CELL_PX
+    viewer.grid_size = cell_px
     viewer.width = win_w
     viewer.height = win_h
     viewer.window.set_size(win_w, win_h)
@@ -265,7 +278,7 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
             ox, oy = panel_offsets[i]
             lbf.viewer = viewer
             viewer._draw_badge = badge_fn
-            _draw_panel(viewer, lbf, ox, oy, panel_h)
+            _draw_panel(viewer, lbf, nav_envs[i], ox, oy, panel_h)
         for i, title in enumerate(PANEL_TITLES):
             ox, oy = panel_offsets[i]
             pyglet.text.Label(
@@ -313,6 +326,9 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
         render_frame(badge_fns)
         time.sleep(1)
 
+        # Lock each panel's target to the first action the model picks, then only move
+        locked_targets: list[int | None] = [None] * N_PANELS
+
         # Step all envs until all are done
         done_flags = [False] * N_PANELS
         while not all(done_flags):
@@ -325,8 +341,14 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
                 if done_flags[i]:
                     continue
                 obs1, obs2 = obs_list[i]
-                a1 = policy(obs1)
-                a2 = policy(obs2)
+                a1_raw = policy(obs1)
+                a2_raw = policy(obs2)
+                # Lock target on first step; afterwards keep it fixed
+                if locked_targets[i] is None:
+                    locked_targets[i] = a1_raw // 5
+                target = locked_targets[i]
+                a1 = target * 5 + (a1_raw % 5)
+                a2 = target * 5 + (a2_raw % 5)
                 obs_pair, _, terminated, truncated, info = nav_env.step((a1, a2))
                 obs_list[i] = obs_pair
                 done_flags[i] = terminated or truncated
