@@ -27,19 +27,12 @@ from cost_function import cost_optimal_baseline, DEFAULT_WEIGHTS
 from poi_environment import PoINavigationEnv
 
 MODEL_DIR = Path(__file__).parent / "models"
-PLOT_DIR = Path(__file__).parent  # legacy; prefer model folders
 
 
 def get_history_path(algo: str, grid_size: int | str) -> Path:
     """Path to training_history_*.pkl in the model folder."""
     tag = str(grid_size)
     return MODEL_DIR / algo / f"training_history_{algo}_{tag}.pkl"
-
-
-def get_plot_path(algo: str, grid_size: int | str) -> Path:
-    """Path to training_plot_*.png in the model folder."""
-    tag = str(grid_size)
-    return MODEL_DIR / algo / f"training_plot_{algo}_{tag}.png"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -140,17 +133,13 @@ def train_ppo(
             self._env = PoINavigationEnv(seed=seed, grid_size=grid_size)
             self.observation_space = self._env.observation_space
             self.action_space = self._env.action_space
-            self._obs2 = None
 
         def reset(self, **kwargs):
-            (obs1, obs2), info = self._env.reset(**kwargs)
-            self._obs2 = obs2
+            (obs1, _), info = self._env.reset(**kwargs)
             return obs1, info
 
         def step(self, action):
-            a2 = action
-            (obs1, obs2), reward, term, trunc, info = self._env.step((action, a2))
-            self._obs2 = obs2
+            (obs1, _), reward, term, trunc, info = self._env.step((action, action))
             return obs1, reward, term, trunc, info
 
     env = _NavWrapper()
@@ -368,36 +357,6 @@ def train_qlearning(
         return int(np.argmax(q_table[_discretize_nav(obs)]))
     stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size)
     print(f"Final eval — cost_success: {stats['cost_success']:.1%}  reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Suggest helpers (for demo.py)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def suggest_nav_ppo(obs: np.ndarray, grid_size: tuple[int, int] = (64, 64)) -> int:
-    """Load PPO navigation model and predict action for one agent."""
-    from stable_baselines3 import PPO
-    size_tag = str(grid_size[0])
-    model = PPO.load(str(MODEL_DIR / "ppo" / f"nav_ppo_{size_tag}"))
-    a, _ = model.predict(obs, deterministic=True)
-    return int(a)
-
-
-def suggest_nav_dqn(obs: np.ndarray, grid_size: tuple[int, int] = (64, 64)) -> int:
-    from stable_baselines3 import DQN
-    size_tag = str(grid_size[0])
-    model = DQN.load(str(MODEL_DIR / "dqn" / f"nav_dqn_{size_tag}"))
-    a, _ = model.predict(obs, deterministic=True)
-    return int(a)
-
-
-def suggest_nav_qlearning(obs: np.ndarray, grid_size: tuple[int, int] = (64, 64)) -> int:
-    size_tag = str(grid_size[0])
-    model_path = MODEL_DIR / "qlearning" / f"nav_qtable_{size_tag}.pkl"
-    with open(model_path, "rb") as f:
-        q_table = pickle.load(f)
-    state = _discretize_nav(obs)
-    return int(np.argmax(q_table.get(state, np.zeros(_NAV_ACTIONS))))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

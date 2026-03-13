@@ -50,22 +50,6 @@ def _bfs_dist_map(
     return dist
 
 
-def _cost_components_from_maps(
-    poi: tuple[int, int],
-    self_map: dict[tuple[int, int], float],
-    other_map: dict[tuple[int, int], float],
-    max_dist: float,
-) -> tuple[float, float, float, float, float]:
-    """Compute cost components using pre-built BFS distance maps."""
-    dist_s = min(self_map.get(poi, float("inf")), max_dist)
-    dist_o = min(other_map.get(poi, float("inf")), max_dist)
-    te_s = dist_s / max_dist
-    te_o = dist_o / max_dist
-    energy = 0.2 + 0.6 * te_o
-    privacy = 1.0 - te_o
-    ttm = max(te_s, te_o)
-    return te_s, te_o, energy, privacy, ttm
-
 
 def _build_nav_obs_bfs(
     self_pos: tuple[int, int],
