@@ -119,33 +119,36 @@ def train_ppo(
 ) -> None:
     from stable_baselines3 import PPO
     from stable_baselines3.common.callbacks import BaseCallback
+    from stable_baselines3.common.vec_env import SubprocVecEnv
+
+    import gymnasium as gym
 
     size_tag = str(grid_size[0])
     save_dir = MODEL_DIR / "ppo"
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    import gymnasium as gym
-
     # max_steps scales with grid: enough room to navigate with obstacles
     max_steps = max(300, grid_size[0] * grid_size[1] // 2)
 
-    class _NavWrapper(gym.Env):
-        """Wraps PoINavigationEnv as single-agent env (shared policy, agent1 view)."""
-        def __init__(self):
-            super().__init__()
-            self._env = PoINavigationEnv(seed=seed, grid_size=grid_size, max_steps=max_steps)
-            self.observation_space = self._env.observation_space
-            self.action_space = self._env.action_space
+    def _make_env(env_seed: int):
+        def _init():
+            class _NavWrapper(gym.Env):
+                def __init__(self):
+                    super().__init__()
+                    self._env = PoINavigationEnv(seed=env_seed, grid_size=grid_size, max_steps=max_steps)
+                    self.observation_space = self._env.observation_space
+                    self.action_space = self._env.action_space
+                def reset(self, **kwargs):
+                    (obs1, _), info = self._env.reset(**kwargs)
+                    return obs1, info
+                def step(self, action):
+                    (obs1, _), reward, term, trunc, info = self._env.step((action, action))
+                    return obs1, reward, term, trunc, info
+            return _NavWrapper()
+        return _init
 
-        def reset(self, **kwargs):
-            (obs1, _), info = self._env.reset(**kwargs)
-            return obs1, info
-
-        def step(self, action):
-            (obs1, _), reward, term, trunc, info = self._env.step((action, action))
-            return obs1, reward, term, trunc, info
-
-    env = _NavWrapper()
+    n_envs = 8
+    env = SubprocVecEnv([_make_env(seed + i) for i in range(n_envs)])
 
     reward_history, cost_success_history, agreement_history, step_history = [], [], [], []
 
@@ -172,9 +175,9 @@ def train_ppo(
                 _save_history(step_history, reward_history, cost_success_history, agreement_history,
                               "ppo", size_tag)
 
-    # n_steps must be >= max_steps so PPO sees complete episodes in each rollout
-    n_steps = max(512, max_steps)
-    model = PPO("MlpPolicy", env, learning_rate=3e-4, n_steps=n_steps, batch_size=128,
+    # n_steps per env; total rollout = n_steps * n_envs (must cover at least one episode)
+    n_steps = max(512, max_steps) // n_envs
+    model = PPO("MlpPolicy", env, learning_rate=3e-4, n_steps=n_steps, batch_size=256,
                 n_epochs=10, gamma=0.99, max_grad_norm=0.5, clip_range_vf=10.0,
                 verbose=1, seed=seed)
     model.learn(total_timesteps=total_timesteps, callback=_Callback())
@@ -252,7 +255,7 @@ def train_dqn(
 
     # exploration_fraction=0.3 keeps ε-greedy exploration for 150k steps (at 500k total)
     model = DQN("MlpPolicy", env, learning_rate=1e-4, buffer_size=100_000,
-                learning_starts=1000, batch_size=64, gamma=0.99,
+                learning_starts=1000, batch_size=128, gamma=0.99,
                 exploration_fraction=0.3, exploration_final_eps=0.05,
                 verbose=1, seed=seed)
     model.learn(total_timesteps=total_timesteps, callback=_Callback())
@@ -270,29 +273,61 @@ def train_dqn(
 # Q-Learning (Tabular RL)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_NAV_BINS = 3
-_NAV_OBS_DIM = 27  # self(2)+other(2)+walls_self(4)+walls_other(4)+costs*3(15)
 _NAV_ACTIONS = 15  # composite: target_idx*5 + move
-_NAV_STATE_SIZE = _NAV_BINS ** _NAV_OBS_DIM  # tabular Q-learning impractical at this size
+
+# Observation layout (27 floats):
+#   [0:2]  self_pos, [2:4] other_pos
+#   [4:8]  wall_bits_self (N/S/W/E), [8:12] wall_bits_other
+#   [12:27] cost_components × 3 POIs (5 each: te_a, te_h, energy, privacy, ttm)
+_COST_START = 12
+_COST_STRIDE = 5  # floats per POI
 
 
-def _discretize_nav(obs: np.ndarray, n_bins: int = _NAV_BINS) -> int:
-    bins = np.clip((obs * n_bins).astype(int), 0, n_bins - 1)
-    state = 0
-    for b in bins:
-        state = state * n_bins + int(b)
-    return state
+def _discretize_nav(obs: np.ndarray) -> int:
+    """
+    Compact discrete state for tabular Q-Learning.
+    State = (best_poi_idx, wall_bits_self, dir_to_target, dist_bucket)
+    Total states: 3 × 16 × 8 × 3 = 1,152 — tractable for tabular RL.
+    """
+    # Best POI: index of POI with lowest weighted cost sum
+    costs = [
+        obs[_COST_START + i * _COST_STRIDE] * 0.20   # te_a
+        + obs[_COST_START + i * _COST_STRIDE + 1] * 0.35  # te_h
+        + obs[_COST_START + i * _COST_STRIDE + 2] * 0.10  # energy
+        + obs[_COST_START + i * _COST_STRIDE + 3] * 0.10  # privacy
+        + obs[_COST_START + i * _COST_STRIDE + 4] * 0.25  # ttm
+        for i in range(3)
+    ]
+    best_poi = int(np.argmin(costs))  # 0-2
+
+    # Wall bits self: 4 binary bits → integer 0-15
+    wall_bits = int(obs[4]) * 8 + int(obs[5]) * 4 + int(obs[6]) * 2 + int(obs[7])  # 0-15
+
+    # Direction to target: use self_pos vs target's te_a to infer direction bucket
+    # Approximate from self_pos normalized coords (0-1) — 8 octants
+    sr, sc = float(obs[0]), float(obs[1])
+    # Use cost gradient: which direction reduces te_a most?
+    # Simplified: encode position as 8-directional bucket relative to grid center
+    dr = sr - 0.5
+    dc = sc - 0.5
+    angle = int((np.arctan2(dc, dr) + np.pi) / (np.pi / 4)) % 8  # 0-7
+
+    # Distance bucket to best POI: te_a of best POI → 3 buckets
+    te_a_best = float(obs[_COST_START + best_poi * _COST_STRIDE])
+    dist_bucket = 0 if te_a_best < 0.25 else (1 if te_a_best < 0.55 else 2)  # 0-2
+
+    return best_poi * (16 * 8 * 3) + wall_bits * (8 * 3) + angle * 3 + dist_bucket
 
 
 def train_qlearning(
-    total_episodes: int = 500_000,
+    total_episodes: int = 200_000,
     seed: int = 42,
-    eval_freq: int = 25_000,
-    alpha: float = 0.1,
+    eval_freq: int = 20_000,
+    alpha: float = 0.2,
     gamma: float = 0.99,
     epsilon_start: float = 1.0,
     epsilon_end: float = 0.05,
-    epsilon_decay: float = 0.99999,
+    epsilon_decay: float = 0.99997,
     grid_size: tuple[int, int] = (64, 64),
 ) -> None:
     size_tag = str(grid_size[0])
@@ -302,7 +337,8 @@ def train_qlearning(
     from collections import defaultdict
     q_table: dict[int, np.ndarray] = defaultdict(lambda: np.zeros(_NAV_ACTIONS, dtype=np.float32))
 
-    env = PoINavigationEnv(seed=seed, grid_size=grid_size)
+    max_steps = max(300, grid_size[0] * grid_size[1] // 2)
+    env = PoINavigationEnv(seed=seed, grid_size=grid_size, max_steps=max_steps)
     rng = np.random.default_rng(seed)
     epsilon = epsilon_start
 
@@ -379,7 +415,7 @@ def main():
     parser.add_argument("--grid-size", type=int, choices=[8, 32, 64], default=8,
                         help="Grid size (8, 32, or 64)")
     parser.add_argument("--steps", type=int, default=500_000, help="Timesteps (ppo/dqn)")
-    parser.add_argument("--episodes", type=int, default=500_000, help="Episodes (qlearning)")
+    parser.add_argument("--episodes", type=int, default=200_000, help="Episodes (qlearning)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no-train", action="store_true")
     args = parser.parse_args()

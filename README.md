@@ -1,20 +1,19 @@
 # ThessLink RL
 
-**Cooperative multi-agent navigation** for meeting point suggestion. Two agents learn to navigate together to the optimal POI on a 64×64 grid with static obstacles, using a shared RL policy.
+**Cooperative multi-agent navigation** for meeting point suggestion. Two agents learn to navigate together to the optimal POI on a grid with static obstacles, using a shared RL policy.
 
 ![lb-foraging environment](example.gif)
 
 ## Overview
 
 - **Agents:** Two symmetric agents (agent1, agent2) share a single policy
-- **Environment:** 64×64 grid with ~10% static obstacles (connectivity guaranteed)
-- **Goal:** Both agents navigate to the same target POI
-- **Target POI:** Selected at episode start using the A\* cost function (minimum weighted cost)
-- **Baseline:** Greedy A\* — always move toward the nearest-human POI without learning
+- **Environment:** Grid with ~10% static obstacles (connectivity guaranteed), supports 8×8, 32×32, 64×64
+- **Goal:** Both agents navigate to the same target POI (out of 3 candidates)
+- **Target POI:** The policy selects which POI to navigate to each step, guided by the cost function
 
 ## Cost function
 
-The target POI is chosen by minimizing a weighted cost over A\* path distances:
+The optimal POI minimizes a weighted cost over A\* path distances:
 
 $$\text{cost} = w_{TE_a} \cdot d_A + w_{TE_h} \cdot d_H + w_e \cdot e + w_p \cdot p + w_{TTM} \cdot ttm$$
 
@@ -29,23 +28,46 @@ $$\text{cost} = w_{TE_a} \cdot d_A + w_{TE_h} \cdot d_H + w_e \cdot e + w_p \cdo
 
 Default weights: $w_{TE_a} = 0.20,\ w_{TE_h} = 0.35,\ w_e = 0.10,\ w_p = 0.10,\ w_{TTM} = 0.25$
 
+The highest weight is on $d_H$ (human travel effort), prioritising the human's comfort.
+
 ## Reward
 
 Each step the agents receive a shared reward:
 
-$$r = -0.01 + \frac{(\Delta d_1 + \Delta d_2)}{D_{\max}}$$
+$$r = -\text{cost}(\text{chosen POI}) - 0.01$$
 
-where $\Delta d_i$ is the reduction in A\* distance to the target POI for agent $i$. On arrival both agents receive an additional terminal reward of $-\text{cost}$.
+The step penalty encourages reaching the target quickly. The policy is penalised proportionally to how suboptimal its POI choice is at every step.
+
+## Observation space
+
+Per agent (27 floats):
+
+| Features | Size | Description |
+|----------|------|-------------|
+| `self_pos` | 2 | Normalized (row, col) of this agent |
+| `other_pos` | 2 | Normalized (row, col) of the other agent |
+| `wall_bits_self` | 4 | Binary: N/S/W/E directions blocked for this agent |
+| `wall_bits_other` | 4 | Binary: N/S/W/E directions blocked for the other agent |
+| `cost_components × 3 POIs` | 15 | BFS cost components (te_a, te_h, energy, privacy, ttm) for each POI |
+
+Wall bits prevent the model from getting stuck in deterministic loops at obstacles.
+
+## Action space
+
+`Discrete(15)` — composite action: `target_idx * 5 + move`
+
+- `target_idx ∈ {0, 1, 2}` — which POI to navigate to
+- `move ∈ {NONE, N, S, W, E}` — movement direction
 
 ## Algorithms
 
 Three RL categories are compared on the same environment:
 
-| Category | Algorithm | File |
-|----------|-----------|------|
-| **Tabular RL** | Q-Learning | `navigation_train.py --algo qlearning` |
-| **Deep Value-based RL** | DQN | `navigation_train.py --algo dqn` |
-| **Policy Gradient (Actor-Critic)** | PPO | `navigation_train.py --algo ppo` |
+| Category | Algorithm | Notes |
+|----------|-----------|-------|
+| **Tabular RL** | Q-Learning | Compact discrete state (1,152 states); tractable for tabular RL |
+| **Deep Value-based RL** | DQN | Off-policy, replay buffer, ε-greedy exploration |
+| **Policy Gradient (Actor-Critic)** | PPO | On-policy, 8 parallel envs via SubprocVecEnv |
 
 ## Setup
 
@@ -59,72 +81,62 @@ pip install -r requirements.txt
 ## Training
 
 ```bash
-# PPO — Policy Gradient (Actor-Critic)
-python navigation_train.py --algo ppo --steps 200000
+# PPO — 500k steps, 8 parallel envs (~2 min on Apple M4)
+python navigation_train.py --algo ppo --grid-size 8
 
-# DQN — Deep Value-based RL
-python navigation_train.py --algo dqn --steps 200000
+# DQN — 500k steps (~2.5 min on Apple M4)
+python navigation_train.py --algo dqn --grid-size 8
 
-# Q-Learning — Tabular RL
-python navigation_train.py --algo qlearning --episodes 500000
+# Q-Learning — 200k episodes
+python navigation_train.py --algo qlearning --grid-size 8
 ```
 
-Each run saves the model and a training plot (`training_plot_nav_<algo>.png`) with 3 subplots:
-1. Mean Episode Reward
-2. Success Rate (both agents arrived at target)
-3. Agreement with nearest-human baseline
+Supported grid sizes: `8`, `32`, `64`. Each run saves the model and training history under `models/<algo>/`.
 
 Evaluate a trained model without retraining:
 
 ```bash
-python navigation_train.py --algo ppo --no-train
+python navigation_train.py --algo ppo --grid-size 8 --no-train
 ```
 
 ## Demo
 
-4-panel visualization: all three algorithms + baseline run the **same scenario** simultaneously.
+3-panel visualization: Q-Learning, DQN, and PPO run the **same scenario** simultaneously.
 
 ```bash
-python demo.py                 # 5 scenarios
+python demo.py --grid-size 8    # 5 scenarios (default)
 python demo.py --scenarios 10
-python demo.py --scenarios 0   # Infinite until window closed
+python demo.py --scenarios 0    # Infinite until window closed
 ```
 
-Color coding per panel:
-- **1** (blue) = agent1, **2** (red) = agent2
-- **T** (green) = target POI
-- **P1/P2/P3** (grey) = non-target POIs
-- **#** (dark) = obstacles
+POI colour coding per panel:
+
+| Colour | Meaning |
+|--------|---------|
+| Green | POI chosen by the model (model's target) |
+| Blue | POI chosen by the cost-optimal baseline |
+| Cyan | Model and baseline agree on this POI |
+| Grey | Other POIs |
+| Dark | Obstacles |
+| Blue label **1** | agent1 |
+| Red label **2** | agent2 |
 
 ## Project structure
 
 ```
 thesslink-rl/
 ├── cost_function.py        # astar_distance, cost_components, cost_optimal_baseline
-├── poi_environment.py      # PoINavigationEnv (multi-step, obstacles, shared policy)
-├── navigation_train.py     # Training: PPO, DQN, Q-Learning
-├── demo.py                 # 4-panel navigation demo
+├── poi_environment.py      # PoINavigationEnv (27-float obs, wall bits, shared policy)
+├── navigation_train.py     # Training: PPO (SubprocVecEnv), DQN, Q-Learning
+├── demo.py                 # 3-panel navigation demo
 ├── models/
-│   ├── ppo/                # nav_ppo.zip
-│   ├── dqn/                # nav_dqn.zip
-│   └── qlearning/          # nav_qtable.pkl
-├── training_plot_nav_ppo.png
-├── training_plot_nav_dqn.png
-├── training_plot_nav_qlearning.png
-├── lb-foraging/            # lb-foraging env (visualization)
+│   ├── ppo/                # nav_ppo_<size>.zip + training_history
+│   ├── dqn/                # nav_dqn_<size>.zip + training_history
+│   └── qlearning/          # nav_qtable_<size>.pkl + training_history
+├── lb-foraging/            # lb-foraging env (visualization only)
 ├── requirements.txt
 └── README.md
 ```
-
-## Observation space
-
-Per agent (19 floats):
-
-| Features | Size | Description |
-|----------|------|-------------|
-| `self_pos` | 2 | Normalized (row, col) of this agent |
-| `other_pos` | 2 | Normalized (row, col) of the other agent |
-| `cost_components × 3 POIs` | 15 | A\* cost components for each POI |
 
 ## Related improvements / ideas
 
