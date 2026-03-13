@@ -5,11 +5,12 @@ Centralized controller design: a single "god-camera" model sees the full
 global state (both agent positions, all POIs, obstacles) and outputs a joint
 action that controls both agents independently while selecting a shared target.
 
-Observation (27 floats — global state):
+Observation (33 floats — global state):
     agent1_pos (2) + agent2_pos (2) + wall_bits_a1 (4) + wall_bits_a2 (4)
-    + cost_components × 3 POIs (15)
+    + poi_positions (6) + cost_components × 3 POIs (15)
     Wall bits encode blocked N/S/W/E directions for each agent.
-    Cost components use BFS distances so the model can infer the best POI.
+    POI positions give explicit direction vectors so the model can navigate.
+    Cost components use BFS distances so the model can select the best POI.
 
 Action: Discrete(75) — joint (target_idx, move1, move2)
     target_idx ∈ {0,1,2}  — which POI both agents navigate to
@@ -76,14 +77,19 @@ def _bfs_dist_map(
 def _build_global_obs(
     agent1_pos: tuple[int, int],
     agent2_pos: tuple[int, int],
+    pois: list[tuple[int, int]],
     poi_dist_maps: list[dict[tuple[int, int], float]],
     grid_size: tuple[int, int],
     obstacles: FrozenSet[tuple[int, int]],
 ) -> np.ndarray:
     """
-    Build 27-float global observation for the centralized controller:
+    Build 33-float global observation for the centralized controller:
       agent1_pos(2) + agent2_pos(2) + wall_bits_a1(4) + wall_bits_a2(4)
-      + cost_components×3_POIs(15)
+      + poi_positions(6) + cost_components×3_POIs(15)
+
+    POI positions give the model explicit direction vectors so it can
+    navigate toward a target (without them the model only knows scalar
+    distance and cannot determine which way to move).
 
     Cost components per POI (5 floats each):
       te_a (agent1 BFS dist), te_h (agent2 BFS dist),
@@ -95,7 +101,12 @@ def _build_global_obs(
     a2_norm = np.array([agent2_pos[0] / max(rows - 1, 1), agent2_pos[1] / max(cols - 1, 1)], dtype=np.float32)
     walls_a1 = np.array(_wall_bits(agent1_pos, obstacles, rows, cols), dtype=np.float32)
     walls_a2 = np.array(_wall_bits(agent2_pos, obstacles, rows, cols), dtype=np.float32)
-    parts = [a1_norm, a2_norm, walls_a1, walls_a2]
+    # Normalized POI positions — lets the model compute direction to target
+    poi_pos = np.array(
+        [coord / max(dim - 1, 1) for poi in pois for coord, dim in zip(poi, (rows, cols))],
+        dtype=np.float32,
+    )
+    parts = [a1_norm, a2_norm, walls_a1, walls_a2, poi_pos]
     for dist_map in poi_dist_maps:
         dist_a = min(dist_map.get(agent1_pos, float("inf")), max_dist)
         dist_h = min(dist_map.get(agent2_pos, float("inf")), max_dist)
@@ -135,9 +146,9 @@ class PoINavigationEnv(gym.Env):
         self.weights = DEFAULT_WEIGHTS if weights is None else weights
 
         # Global observation: agent1_pos(2) + agent2_pos(2) + wall_bits×2(8)
-        #                     + cost_components×3_POIs(15) = 27
+        #                     + poi_positions(6) + cost_components×3_POIs(15) = 33
         self.observation_space = gym.spaces.Box(
-            low=0.0, high=1.0, shape=(27,), dtype=np.float32
+            low=0.0, high=1.0, shape=(33,), dtype=np.float32
         )
         # Joint action: target_idx * 25 + move1 * 5 + move2
         # target_idx ∈ {0,1,2}, move1/move2 ∈ {NONE,N,S,W,E}
@@ -250,10 +261,10 @@ class PoINavigationEnv(gym.Env):
         return self._get_obs(), {}
 
     def _get_obs(self) -> np.ndarray:
-        """Returns the 27-float global observation."""
+        """Returns the 33-float global observation."""
         return _build_global_obs(
             self._agent1_pos, self._agent2_pos,
-            self._poi_dist_maps, self.grid_size, self._obstacles,
+            self._pois, self._poi_dist_maps, self.grid_size, self._obstacles,
         )
 
     def _try_move(self, pos: tuple[int, int], action: int) -> tuple[int, int]:

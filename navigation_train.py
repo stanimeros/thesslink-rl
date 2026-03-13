@@ -2,8 +2,9 @@
 """
 Train cooperative navigation with PoINavigationEnv (centralized controller).
 
-A single model sees the full global state and outputs a joint action that
-selects the target POI and independently moves both agents. Supports three
+A single model sees the full global state (33 floats including POI positions
+for direction awareness) and outputs a joint action that selects the target
+POI and independently moves both agents. Supports three
 algorithm categories:
 
   Tabular RL       : Q-Learning  (--algo qlearning)
@@ -285,11 +286,12 @@ def train_dqn(
 # Joint action space: target_idx(0-2) * 25 + move1(0-4) * 5 + move2(0-4)
 _NAV_ACTIONS = 75
 
-# Observation layout (27 floats):
+# Observation layout (33 floats):
 #   [0:2]  agent1_pos, [2:4] agent2_pos
 #   [4:8]  wall_bits_a1 (N/S/W/E), [8:12] wall_bits_a2
-#   [12:27] cost_components × 3 POIs (5 each: te_a, te_h, energy, privacy, ttm)
-_COST_START = 12
+#   [12:18] poi_positions (poi0_r, poi0_c, poi1_r, poi1_c, poi2_r, poi2_c)
+#   [18:33] cost_components × 3 POIs (5 each: te_a, te_h, energy, privacy, ttm)
+_COST_START = 18
 _COST_STRIDE = 5  # floats per POI
 
 
