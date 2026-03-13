@@ -24,7 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
-from cost_function import nearest_human_baseline
+from cost_function import cost_optimal_baseline, DEFAULT_WEIGHTS
 from poi_environment import PoINavigationEnv
 
 MODEL_DIR = Path(__file__).parent / "models"
@@ -43,10 +43,12 @@ def _eval_navigation(
     """
     Evaluate a navigation policy.
     predict_fn(obs) -> action  (called once per agent per step)
-    Returns dict with mean_reward, success_rate, mean_steps, agreement.
+    Returns dict with mean_reward, mean_cost, cost_success, mean_steps, agreement.
+    cost_success = 1 - cost (clamped to [0,1]); higher = closer to cost-optimal.
+    agreement = fraction of episodes where env target matches cost-optimal baseline.
     """
     env = PoINavigationEnv(seed=seed, grid_size=grid_size)
-    rewards, successes, steps_list, agreements = [], [], [], []
+    rewards, costs, steps_list, agreements = [], [], [], []
 
     for _ in range(n_episodes):
         (obs1, obs2), _ = env.reset()
@@ -59,18 +61,21 @@ def _eval_navigation(
             ep_reward += reward
             done = terminated or truncated
         rewards.append(ep_reward)
-        successes.append(float(info["both_arrived"]))
+        costs.append(info["cost"])
         steps_list.append(info["step"])
 
-        # Agreement: does model pick same target as nearest-human baseline?
-        baseline_idx = nearest_human_baseline(
-            env._pois, env._agent1_pos, env._obstacles, env.grid_size
+        # Agreement: does env target match cost-optimal baseline? (at init positions)
+        baseline_idx = cost_optimal_baseline(
+            env._pois, env._init_agent1_pos, env._init_agent2_pos,
+            env._obstacles, DEFAULT_WEIGHTS, env.grid_size
         )
         agreements.append(float(env._target_poi == env._pois[baseline_idx]))
 
+    cost_successes = [max(0.0, 1.0 - c) for c in costs]
     return {
         "mean_reward": float(np.mean(rewards)),
-        "success_rate": float(np.mean(successes)),
+        "mean_cost": float(np.mean(costs)),
+        "cost_success": float(np.mean(cost_successes)),
         "mean_steps": float(np.mean(steps_list)),
         "agreement": float(np.mean(agreements)),
     }
@@ -79,7 +84,7 @@ def _eval_navigation(
 def _plot(
     steps: list[int],
     rewards: list[float],
-    successes: list[float],
+    cost_successes: list[float],
     agreements: list[float],
     title: str,
     color: str,
@@ -94,17 +99,17 @@ def _plot(
     axes[0].set_title(f"Navigation Training ({title})")
     axes[0].grid(True, alpha=0.3)
 
-    axes[1].plot(steps, successes, color=color, linewidth=0.8, alpha=0.9, marker="o", markersize=3)
-    axes[1].set_ylabel("Success Rate (both arrived)")
+    axes[1].plot(steps, cost_successes, color=color, linewidth=0.8, alpha=0.9, marker="o", markersize=3)
+    axes[1].set_ylabel("Cost Success (1 - cost)")
     axes[1].set_ylim(0, 1.05)
-    axes[1].set_title("Success Rate")
+    axes[1].set_title("Cost Success (higher = closer to cost-optimal)")
     axes[1].grid(True, alpha=0.3)
 
     axes[2].plot(steps, agreements, color=color, linewidth=0.8, alpha=0.9, marker="o", markersize=3)
-    axes[2].set_ylabel("Agreement with nearest-human baseline")
+    axes[2].set_ylabel("Agreement with cost-optimal baseline")
     axes[2].set_ylim(0, 1.05)
     axes[2].set_xlabel("Steps / Episodes")
-    axes[2].set_title("Agreement with nearest-human baseline")
+    axes[2].set_title("Agreement with cost-optimal baseline")
     axes[2].grid(True, alpha=0.3)
 
     plt.tight_layout()
@@ -155,7 +160,7 @@ def train_ppo(
 
     env = _NavWrapper()
 
-    reward_history, success_history, agreement_history, step_history = [], [], [], []
+    reward_history, cost_success_history, agreement_history, step_history = [], [], [], []
 
     class _Callback(BaseCallback):
         def _on_step(self):
@@ -165,19 +170,19 @@ def train_ppo(
                     return int(a)
                 stats = _eval_navigation(predict, n_episodes=100, grid_size=grid_size)
                 reward_history.append(stats["mean_reward"])
-                success_history.append(stats["success_rate"])
+                cost_success_history.append(stats["cost_success"])
                 agreement_history.append(stats["agreement"])
                 step_history.append(self.num_timesteps)
                 print(
                     f"  [{self.num_timesteps:>8}] reward={stats['mean_reward']:.3f}"
-                    f"  success={stats['success_rate']:.1%}"
+                    f"  cost_success={stats['cost_success']:.1%}"
                     f"  steps={stats['mean_steps']:.1f}"
                 )
             return True
 
         def _on_training_end(self):
             if plot_path and reward_history:
-                _plot(step_history, reward_history, success_history, agreement_history,
+                _plot(step_history, reward_history, cost_success_history, agreement_history,
                       f"PPO {size_tag}x{size_tag}", "tab:blue", plot_path)
 
     model = PPO("MlpPolicy", env, learning_rate=1e-4, n_steps=128, batch_size=64,
@@ -191,7 +196,7 @@ def train_ppo(
         a, _ = model.predict(obs, deterministic=True)
         return int(a)
     stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size)
-    print(f"Final eval — success: {stats['success_rate']:.1%}  reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
+    print(f"Final eval — cost_success: {stats['cost_success']:.1%}  reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -230,7 +235,7 @@ def train_dqn(
 
     env = _NavWrapper()
 
-    reward_history, success_history, agreement_history, step_history = [], [], [], []
+    reward_history, cost_success_history, agreement_history, step_history = [], [], [], []
 
     class _Callback(BaseCallback):
         def _on_step(self):
@@ -240,19 +245,19 @@ def train_dqn(
                     return int(a)
                 stats = _eval_navigation(predict, n_episodes=100, grid_size=grid_size)
                 reward_history.append(stats["mean_reward"])
-                success_history.append(stats["success_rate"])
+                cost_success_history.append(stats["cost_success"])
                 agreement_history.append(stats["agreement"])
                 step_history.append(self.num_timesteps)
                 print(
                     f"  [{self.num_timesteps:>8}] reward={stats['mean_reward']:.3f}"
-                    f"  success={stats['success_rate']:.1%}"
+                    f"  cost_success={stats['cost_success']:.1%}"
                     f"  steps={stats['mean_steps']:.1f}"
                 )
             return True
 
         def _on_training_end(self):
             if plot_path and reward_history:
-                _plot(step_history, reward_history, success_history, agreement_history,
+                _plot(step_history, reward_history, cost_success_history, agreement_history,
                       f"DQN {size_tag}x{size_tag}", "tab:green", plot_path)
 
     model = DQN("MlpPolicy", env, learning_rate=1e-4, buffer_size=50_000,
@@ -265,7 +270,7 @@ def train_dqn(
         a, _ = model.predict(obs, deterministic=True)
         return int(a)
     stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size)
-    print(f"Final eval — success: {stats['success_rate']:.1%}  reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
+    print(f"Final eval — cost_success: {stats['cost_success']:.1%}  reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -309,7 +314,7 @@ def train_qlearning(
     rng = np.random.default_rng(seed)
     epsilon = epsilon_start
 
-    reward_history, success_history, agreement_history, step_history = [], [], [], []
+    reward_history, cost_success_history, agreement_history, step_history = [], [], [], []
 
     print(f"Training Q-Learning (navigation, {size_tag}x{size_tag}) for {total_episodes} episodes...")
 
@@ -348,12 +353,12 @@ def train_qlearning(
                 return int(np.argmax(q_table[_discretize_nav(obs)]))
             stats = _eval_navigation(predict, n_episodes=100, grid_size=grid_size)
             reward_history.append(stats["mean_reward"])
-            success_history.append(stats["success_rate"])
+            cost_success_history.append(stats["cost_success"])
             agreement_history.append(stats["agreement"])
             step_history.append(episode + 1)
             print(
                 f"  Episode {episode+1:>8}: reward={stats['mean_reward']:.3f}"
-                f"  success={stats['success_rate']:.1%}"
+                f"  cost_success={stats['cost_success']:.1%}"
                 f"  ε={epsilon:.4f}"
             )
 
@@ -363,13 +368,13 @@ def train_qlearning(
     print(f"Saved Q-table to {model_path}")
 
     if plot_path and reward_history:
-        _plot(step_history, reward_history, success_history, agreement_history,
+        _plot(step_history, reward_history, cost_success_history, agreement_history,
               f"Q-Learning {size_tag}x{size_tag}", "tab:orange", plot_path)
 
     def predict(obs):
         return int(np.argmax(q_table[_discretize_nav(obs)]))
     stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size)
-    print(f"Final eval — success: {stats['success_rate']:.1%}  reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
+    print(f"Final eval — cost_success: {stats['cost_success']:.1%}  reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -438,7 +443,7 @@ def main():
                 q_table = pickle.load(f)
             predict = lambda obs: int(np.argmax(q_table.get(_discretize_nav(obs), np.zeros(_NAV_ACTIONS))))
         stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size)
-        print(f"Success: {stats['success_rate']:.1%}  Reward: {stats['mean_reward']:.3f}  Steps: {stats['mean_steps']:.1f}  Agreement: {stats['agreement']:.1%}")
+        print(f"Cost success: {stats['cost_success']:.1%}  Reward: {stats['mean_reward']:.3f}  Steps: {stats['mean_steps']:.1f}  Agreement: {stats['agreement']:.1%}")
         return
 
     print(f"Training navigation with {args.algo.upper()} on {size_tag}x{size_tag} grid...")

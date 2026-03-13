@@ -100,7 +100,7 @@ Color coding per panel:
 
 ```
 thesslink-rl/
-├── cost_function.py        # astar_distance, nearest_human_baseline
+├── cost_function.py        # astar_distance, cost_components, cost_optimal_baseline
 ├── poi_environment.py      # PoINavigationEnv (multi-step, obstacles, shared policy)
 ├── navigation_train.py     # Training: PPO, DQN, Q-Learning
 ├── demo.py                 # 4-panel navigation demo

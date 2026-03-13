@@ -9,7 +9,7 @@ Observation (per agent, 22 floats):
     Cost components use BFS distances (aligned with target selection).
     target_onehot: one-hot encoding of which POI index is the target.
 Action: Discrete(5) — NONE, NORTH, SOUTH, WEST, EAST
-Reward: shared — step penalty + progress bonus + success bonus + terminal reward
+Reward: shared — -cost - step_penalty (cost from cost function; lower cost = higher reward)
 Episode ends when both agents reach target POI or max_steps exceeded.
 
 Performance: BFS distance maps are computed once per episode (one per POI + one
@@ -149,6 +149,8 @@ class PoINavigationEnv(gym.Env):
         self._target_dist_map: dict[tuple[int, int], float] = {}
         self._poi_dist_maps: list[dict[tuple[int, int], float]] = []
         self._target_idx: int = 0
+        self._init_agent1_pos: tuple[int, int] = (0, 0)
+        self._init_agent2_pos: tuple[int, int] = (0, 0)
 
     # ------------------------------------------------------------------
     # Obstacle generation with connectivity guarantee
@@ -245,6 +247,8 @@ class PoINavigationEnv(gym.Env):
                 best_idx = i
         self._target_poi = self._pois[best_idx]
         self._target_idx = best_idx
+        self._init_agent1_pos = self._agent1_pos
+        self._init_agent2_pos = self._agent2_pos
 
         # Build BFS maps: target (for progress reward) + each POI (for observation)
         self._target_dist_map = _bfs_dist_map(self._target_poi, self._obstacles, self.rows, self.cols)
@@ -298,30 +302,22 @@ class PoINavigationEnv(gym.Env):
         prev1 = min(self._prev_dist1, max_dist)
         prev2 = min(self._prev_dist2, max_dist)
 
-        progress = (prev1 - dist1 + prev2 - dist2) / max_dist
         self._prev_dist1 = dist1
         self._prev_dist2 = dist2
 
-        # Stronger progress signal (2x) + step penalty
-        reward = -0.01 + 2.0 * progress
+        # Cost-based reward: minimize cost (reward = -cost)
+        te_a = dist1 / max_dist
+        te_h = dist2 / max_dist
+        energy = 0.2 + 0.6 * te_h
+        privacy = 1.0 - te_h
+        ttm = max(te_a, te_h)
+        cost = sum(w * v for w, v in zip(self.weights, (te_a, te_h, energy, privacy, ttm)))
+        reward = -cost - 0.01  # step penalty
+        reward = float(np.clip(reward, -10.0, 10.0))
 
         both_arrived = (self._agent1_pos == self._target_poi and self._agent2_pos == self._target_poi)
         terminated = both_arrived
         truncated = self._step_count >= self.max_steps
-
-        if both_arrived:
-            # Success bonus (dense reward) + terminal cost
-            reward += 1.0  # explicit success bonus
-            te_a = 0.0
-            te_h = 0.0
-            energy = 0.2
-            privacy = 1.0
-            ttm = 0.0
-            terminal_cost = sum(w * v for w, v in zip(self.weights, (te_a, te_h, energy, privacy, ttm)))
-            reward += -terminal_cost
-
-        # Clip reward to prevent NaN from extreme values in PPO
-        reward = float(np.clip(reward, -10.0, 10.0))
 
         info = {
             "agent1_pos": self._agent1_pos,
@@ -331,5 +327,6 @@ class PoINavigationEnv(gym.Env):
             "obstacles": self._obstacles,
             "step": self._step_count,
             "both_arrived": both_arrived,
+            "cost": cost,
         }
         return self._get_obs(), reward, terminated, truncated, info

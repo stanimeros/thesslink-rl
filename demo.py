@@ -26,7 +26,6 @@ import numpy as np
 import pyglet
 from pyglet.gl import GL_COLOR_BUFFER_BIT, glClear, glClearColor, glPopMatrix, glPushMatrix, glTranslatef
 
-from cost_function import nearest_human_baseline
 from lbforaging.foraging.environment import ForagingEnv  # pyright: ignore[reportMissingImports]
 from lbforaging.foraging.rendering import Viewer  # pyright: ignore[reportMissingImports]
 from navigation_train import _NAV_ACTIONS, _discretize_nav
