@@ -4,10 +4,12 @@ Cooperative multi-agent navigation environment for ThessLink RL.
 Two symmetric agents (agent1, agent2) share a policy and navigate to the same
 target POI on a 64×64 grid with static obstacles.
 
-Observation (per agent, 19 floats):
-    self_pos (2) + other_pos (2) + cost_components × 3 POIs (15)
+Observation (per agent, 22 floats):
+    self_pos (2) + other_pos (2) + cost_components × 3 POIs (15) + target_onehot (3)
+    Cost components use BFS distances (aligned with target selection).
+    target_onehot: one-hot encoding of which POI index is the target.
 Action: Discrete(5) — NONE, NORTH, SOUTH, WEST, EAST
-Reward: shared — step penalty + progress bonus + terminal reward
+Reward: shared — step penalty + progress bonus + success bonus + terminal reward
 Episode ends when both agents reach target POI or max_steps exceeded.
 
 Performance: BFS distance maps are computed once per episode (one per POI + one
@@ -68,30 +70,34 @@ def _cost_components_from_maps(
     return te_s, te_o, energy, privacy, ttm
 
 
-def _build_nav_obs_manhattan(
+def _build_nav_obs_bfs(
     self_pos: tuple[int, int],
     other_pos: tuple[int, int],
-    pois: list[tuple[int, int]],
+    poi_dist_maps: list[dict[tuple[int, int], float]],
+    target_idx: int,
     grid_size: tuple[int, int],
 ) -> np.ndarray:
     """
-    Build 19-float observation using Manhattan distances (O(1) per POI).
-    Used during training for speed; obstacles affect navigation but not obs features.
+    Build 22-float observation using BFS distances (aligned with target selection).
+    Includes explicit target_onehot so the agent knows which POI to navigate to.
     """
     rows, cols = grid_size
     max_dist = float(rows + cols)
-    self_norm = np.array([self_pos[0] / (rows - 1), self_pos[1] / (cols - 1)], dtype=np.float32)
-    other_norm = np.array([other_pos[0] / (rows - 1), other_pos[1] / (cols - 1)], dtype=np.float32)
+    self_norm = np.array([self_pos[0] / max(rows - 1, 1), self_pos[1] / max(cols - 1, 1)], dtype=np.float32)
+    other_norm = np.array([other_pos[0] / max(rows - 1, 1), other_pos[1] / max(cols - 1, 1)], dtype=np.float32)
     parts = [self_norm, other_norm]
-    for poi in pois:
-        dist_s = abs(self_pos[0] - poi[0]) + abs(self_pos[1] - poi[1])
-        dist_o = abs(other_pos[0] - poi[0]) + abs(other_pos[1] - poi[1])
-        te_s = min(dist_s / max_dist, 1.0)
-        te_o = min(dist_o / max_dist, 1.0)
+    for i, dist_map in enumerate(poi_dist_maps):
+        dist_s = min(dist_map.get(self_pos, float("inf")), max_dist)
+        dist_o = min(dist_map.get(other_pos, float("inf")), max_dist)
+        te_s = dist_s / max_dist
+        te_o = dist_o / max_dist
         energy = 0.2 + 0.6 * te_o
         privacy = 1.0 - te_o
         ttm = max(te_s, te_o)
         parts.append(np.array([te_s, te_o, energy, privacy, ttm], dtype=np.float32))
+    target_onehot = np.zeros(3, dtype=np.float32)
+    target_onehot[target_idx] = 1.0
+    parts.append(target_onehot)
     return np.concatenate(parts).astype(np.float32)
 
 
@@ -120,9 +126,9 @@ class PoINavigationEnv(gym.Env):
         self.max_steps = max_steps
         self.weights = DEFAULT_WEIGHTS if weights is None else weights
 
-        # Observation: self_pos(2) + other_pos(2) + cost_components*3(15) = 19
+        # Observation: self_pos(2) + other_pos(2) + cost_components*3(15) + target_onehot(3) = 22
         self.observation_space = gym.spaces.Box(
-            low=0.0, high=1.0, shape=(19,), dtype=np.float32
+            low=0.0, high=1.0, shape=(22,), dtype=np.float32
         )
         # NONE, NORTH, SOUTH, WEST, EAST
         self.action_space = gym.spaces.Discrete(5)
@@ -139,9 +145,10 @@ class PoINavigationEnv(gym.Env):
 
         # BFS distance maps — rebuilt once per episode
         # _target_dist_map: distances FROM target (for progress reward)
-        # _poi_dist_maps: distances FROM each POI source (for observation cost_components)
+        # _poi_dist_maps: distances FROM each POI (for observation, aligned with target selection)
         self._target_dist_map: dict[tuple[int, int], float] = {}
         self._poi_dist_maps: list[dict[tuple[int, int], float]] = []
+        self._target_idx: int = 0
 
     # ------------------------------------------------------------------
     # Obstacle generation with connectivity guarantee
@@ -237,12 +244,13 @@ class PoINavigationEnv(gym.Env):
                 best_cost = c
                 best_idx = i
         self._target_poi = self._pois[best_idx]
+        self._target_idx = best_idx
 
-        # Build BFS map from target only (used for O(1) progress reward per step)
+        # Build BFS maps: target (for progress reward) + each POI (for observation)
         self._target_dist_map = _bfs_dist_map(self._target_poi, self._obstacles, self.rows, self.cols)
-
-        # Pre-compute Manhattan-based POI distances for observation (fast, no BFS)
-        # Obstacles affect navigation but observation uses Manhattan as a proxy
+        self._poi_dist_maps = [
+            _bfs_dist_map(poi, self._obstacles, self.rows, self.cols) for poi in self._pois
+        ]
         self._step_count = 0
         self._prev_dist1 = self._target_dist_map.get(self._agent1_pos, float("inf"))
         self._prev_dist2 = self._target_dist_map.get(self._agent2_pos, float("inf"))
@@ -250,12 +258,14 @@ class PoINavigationEnv(gym.Env):
         return self._get_obs(), {}
 
     def _get_obs(self) -> tuple[np.ndarray, np.ndarray]:
-        """Returns (obs_agent1, obs_agent2) using Manhattan distances — O(1)."""
-        obs1 = _build_nav_obs_manhattan(
-            self._agent1_pos, self._agent2_pos, self._pois, self.grid_size
+        """Returns (obs_agent1, obs_agent2) using BFS distances + target_onehot."""
+        obs1 = _build_nav_obs_bfs(
+            self._agent1_pos, self._agent2_pos,
+            self._poi_dist_maps, self._target_idx, self.grid_size
         )
-        obs2 = _build_nav_obs_manhattan(
-            self._agent2_pos, self._agent1_pos, self._pois, self.grid_size
+        obs2 = _build_nav_obs_bfs(
+            self._agent2_pos, self._agent1_pos,
+            self._poi_dist_maps, self._target_idx, self.grid_size
         )
         return obs1, obs2
 
@@ -289,14 +299,16 @@ class PoINavigationEnv(gym.Env):
         self._prev_dist1 = dist1
         self._prev_dist2 = dist2
 
-        reward = -0.01 + progress
+        # Stronger progress signal (2x) + step penalty
+        reward = -0.01 + 2.0 * progress
 
         both_arrived = (self._agent1_pos == self._target_poi and self._agent2_pos == self._target_poi)
         terminated = both_arrived
         truncated = self._step_count >= self.max_steps
 
         if both_arrived:
-            # Terminal reward: negative cost at meeting point (O(1) — distances are 0)
+            # Success bonus (dense reward) + terminal cost
+            reward += 1.0  # explicit success bonus
             te_a = 0.0
             te_h = 0.0
             energy = 0.2

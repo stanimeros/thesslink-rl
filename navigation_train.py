@@ -272,9 +272,9 @@ def train_dqn(
 # ─────────────────────────────────────────────────────────────────────────────
 
 _NAV_BINS = 3
-_NAV_OBS_DIM = 19
+_NAV_OBS_DIM = 22  # self(2)+other(2)+costs*3(15)+target_onehot(3)
 _NAV_ACTIONS = 5
-_NAV_STATE_SIZE = _NAV_BINS ** _NAV_OBS_DIM  # ~1.16B — too large for dense table
+_NAV_STATE_SIZE = _NAV_BINS ** _NAV_OBS_DIM  # tabular Q-learning impractical at this size
 
 
 def _discretize_nav(obs: np.ndarray, n_bins: int = _NAV_BINS) -> int:
