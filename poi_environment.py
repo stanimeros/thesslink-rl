@@ -306,8 +306,11 @@ class PoINavigationEnv(gym.Env):
         self._target_idx = target_idx
         self._target_poi = self._pois[target_idx]
 
-        self._agent1_pos = self._try_move(self._agent1_pos, move1)
-        self._agent2_pos = self._try_move(self._agent2_pos, move2)
+        # Once an agent reaches the target it waits there for the other agent.
+        if self._agent1_pos != self._target_poi:
+            self._agent1_pos = self._try_move(self._agent1_pos, move1)
+        if self._agent2_pos != self._target_poi:
+            self._agent2_pos = self._try_move(self._agent2_pos, move2)
         self._step_count += 1
 
         # BFS distance to chosen target for each agent
