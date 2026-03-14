@@ -17,7 +17,7 @@ Action: MultiDiscrete([5, 5])
     [1] move2 ∈ {0..4}  — agent2 movement (NONE,N,S,W,E)
 
 Reward: shared
-    +progress        — reward proportional to BFS distance change toward optimal POI (positive or negative)
+    +progress        — one-time reward when agents reach a new closest distance to optimal POI
     -STEP_PENALTY    — per-step penalty = TERMINAL_BONUS / max_steps
     +TERMINAL_BONUS  — cost-scaled bonus when both agents meet at ANY POI:
                        TERMINAL_BONUS * (1 + 2*(1 - cost))  →  cheaper POI = bigger bonus
@@ -171,6 +171,7 @@ class PoINavigationEnv(gym.Env):
 
         self._poi_dist_maps: list[dict[tuple[int, int], float]] = []
         self._optimal_poi_idx: int = 0
+        self._best_combined_dist: float = float("inf")
         self._init_agent1_pos: tuple[int, int] = (0, 0)
         self._init_agent2_pos: tuple[int, int] = (0, 0)
 
@@ -261,6 +262,11 @@ class PoINavigationEnv(gym.Env):
             costs.append(sum(w * v for w, v in zip(self.weights, (te_a, te_h, energy, privacy, ttm))))
         self._optimal_poi_idx = int(np.argmin(costs))
 
+        optimal_map = self._poi_dist_maps[self._optimal_poi_idx]
+        d1 = min(optimal_map.get(self._agent1_pos, float("inf")), max_dist)
+        d2 = min(optimal_map.get(self._agent2_pos, float("inf")), max_dist)
+        self._best_combined_dist = d1 + d2
+
         return self._get_obs(), {}
 
     def _get_obs(self) -> np.ndarray:
@@ -296,18 +302,23 @@ class PoINavigationEnv(gym.Env):
         max_dist = float(self.rows + self.cols)
         optimal_map = self._poi_dist_maps[self._optimal_poi_idx]
 
-        prev_dist1 = min(optimal_map.get(self._agent1_pos, float("inf")), max_dist)
-        prev_dist2 = min(optimal_map.get(self._agent2_pos, float("inf")), max_dist)
-
-        self._agent1_pos = self._try_move(self._agent1_pos, move1)
-        self._agent2_pos = self._try_move(self._agent2_pos, move2)
+        optimal_poi = self._pois[self._optimal_poi_idx]
+        if self._agent1_pos != optimal_poi:
+            self._agent1_pos = self._try_move(self._agent1_pos, move1)
+        if self._agent2_pos != optimal_poi:
+            self._agent2_pos = self._try_move(self._agent2_pos, move2)
         self._step_count += 1
 
         dist1 = min(optimal_map.get(self._agent1_pos, float("inf")), max_dist)
         dist2 = min(optimal_map.get(self._agent2_pos, float("inf")), max_dist)
+        combined_dist = dist1 + dist2
 
-        progress = (prev_dist1 + prev_dist2 - dist1 - dist2) / (2.0 * max_dist)
-        progress_reward = progress * self.PROGRESS_SCALE
+        if combined_dist < self._best_combined_dist:
+            improvement = (self._best_combined_dist - combined_dist) / (2.0 * max_dist)
+            progress_reward = improvement * self.PROGRESS_SCALE
+            self._best_combined_dist = combined_dist
+        else:
+            progress_reward = 0.0
 
         # Check if both agents met at the same POI
         arrived_poi_idx: int | None = None
