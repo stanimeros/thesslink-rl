@@ -198,6 +198,8 @@ def train_ppo(
     else:
         model = PPO("MlpPolicy", env, learning_rate=3e-4, n_steps=n_steps, batch_size=256,
                     n_epochs=10, gamma=0.99, max_grad_norm=0.5, clip_range_vf=10.0,
+                    ent_coef=0.01,
+                    policy_kwargs=dict(net_arch=dict(pi=[128, 128], vf=[128, 128])),
                     verbose=1, seed=seed)
         reset_num_timesteps = True
 
@@ -277,9 +279,11 @@ def train_dqn(
         model = DQN.load(str(save_path), env=env)
         reset_num_timesteps = False
     else:
-        model = DQN("MlpPolicy", env, learning_rate=1e-4, buffer_size=100_000,
-                    learning_starts=n_envs * 200, batch_size=128, gamma=0.99,
-                    exploration_fraction=0.3, exploration_final_eps=0.05,
+        model = DQN("MlpPolicy", env, learning_rate=1e-4, buffer_size=200_000,
+                    learning_starts=5_000, batch_size=256, gamma=0.99,
+                    exploration_fraction=0.4, exploration_final_eps=0.05,
+                    target_update_interval=1_000,
+                    policy_kwargs=dict(net_arch=[128, 128]),
                     verbose=1, seed=seed)
         reset_num_timesteps = True
 

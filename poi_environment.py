@@ -23,7 +23,7 @@ Reward: shared
                         progress = (prev_dist1 + prev_dist2 - dist1 - dist2) / (2 * max_dist) * PROGRESS_SCALE
     -STEP_PENALTY    — per-step penalty = TERMINAL_BONUS / (2 * max_steps)
                         guarantees: total_step_penalty < TERMINAL_BONUS always
-    -SWITCH_PENALTY  — target-switch penalty = TERMINAL_BONUS * 0.02 per switch
+    -SWITCH_PENALTY  — target-switch penalty = TERMINAL_BONUS * 0.10 per switch
     +TERMINAL_BONUS  — bonus (5.0) when both agents reach the target
 Episode ends when both agents reach chosen target or max_steps exceeded.
 The cost components in the observation allow the model to learn which POI
@@ -146,7 +146,7 @@ class PoINavigationEnv(gym.Env):
         weights: tuple[float, ...] | None = None,
         seed: int | None = None,
         terminal_bonus: float = 5.0,
-        switch_penalty_frac: float = 0.02,
+        switch_penalty_frac: float = 0.10,
         progress_scale: float = 2.0,
     ):
         super().__init__()
