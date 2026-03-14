@@ -17,7 +17,7 @@ Action: MultiDiscrete([5, 5])
     [1] move2 ∈ {0..4}  — agent2 movement (NONE,N,S,W,E)
 
 Reward: shared
-    +progress        — positive reward when BFS distance to optimal POI decreases
+    +progress        — reward proportional to BFS distance change toward optimal POI (positive or negative)
     -STEP_PENALTY    — per-step penalty = TERMINAL_BONUS / max_steps
     +TERMINAL_BONUS  — cost-scaled bonus when both agents meet at ANY POI:
                        TERMINAL_BONUS * (1 + 2*(1 - cost))  →  cheaper POI = bigger bonus
@@ -307,7 +307,7 @@ class PoINavigationEnv(gym.Env):
         dist2 = min(optimal_map.get(self._agent2_pos, float("inf")), max_dist)
 
         progress = (prev_dist1 + prev_dist2 - dist1 - dist2) / (2.0 * max_dist)
-        progress_reward = max(0.0, progress) * self.PROGRESS_SCALE
+        progress_reward = progress * self.PROGRESS_SCALE
 
         # Check if both agents met at the same POI
         arrived_poi_idx: int | None = None
