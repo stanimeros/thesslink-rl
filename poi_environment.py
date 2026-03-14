@@ -17,13 +17,10 @@ Action: MultiDiscrete([3, 5, 5])
     [2] move2      ∈ {0..4}   — agent2 movement (NONE,N,S,W,E)
 
 Reward: shared
-    +progress            — reward for each step that reduces total BFS distance
-    -STEP_PENALTY        — per-step penalty = TERMINAL_BONUS / (2 * max_steps)
-    -SWITCH_PENALTY      — target-switch penalty = TERMINAL_BONUS * 0.05 per switch
-    -oscillation_penalty — 2× STEP_PENALTY per agent that returns to its previous cell
-    -cost_penalty        — weighted cost of current target × COST_PENALTY_SCALE
-    +near_bonus          — small bonus when one agent is at POI and other is 1-2 steps away
-    +TERMINAL_BONUS      — bonus (5.0) when both agents reach the target
+    +progress        — positive reward only when BFS distance decreases (zero if no progress)
+    -STEP_PENALTY    — per-step penalty = TERMINAL_BONUS / (2 * max_steps)
+    +TERMINAL_BONUS  — cost-scaled bonus when both agents reach the target:
+                       TERMINAL_BONUS * (1 + (1 - cost))  →  cheaper POI = bigger bonus
 Episode ends when both agents reach chosen target or max_steps exceeded.
 """
 from __future__ import annotations
@@ -147,9 +144,7 @@ class PoINavigationEnv(gym.Env):
         weights: tuple[float, ...] | None = None,
         seed: int | None = None,
         terminal_bonus: float = 5.0,
-        switch_penalty_frac: float = 0.05,
         progress_scale: float = 2.0,
-        cost_penalty_scale: float = 0.3,
     ):
         super().__init__()
         self.grid_size = grid_size
@@ -160,15 +155,11 @@ class PoINavigationEnv(gym.Env):
 
         self.TERMINAL_BONUS = terminal_bonus
         self.STEP_PENALTY = terminal_bonus / (2.0 * max_steps)
-        self.SWITCH_PENALTY = terminal_bonus * switch_penalty_frac
         self.PROGRESS_SCALE = progress_scale
-        self.COST_PENALTY_SCALE = cost_penalty_scale
 
-        # Observation: 35 floats — deltas in [-1,1], cost components in [0,1]
         self.observation_space = gym.spaces.Box(
             low=-1.0, high=1.0, shape=(_OBS_DIM,), dtype=np.float32
         )
-        # MultiDiscrete: [target_idx, move1, move2]
         self.action_space = gym.spaces.MultiDiscrete([3, 5, 5])
 
         self._rng = np.random.default_rng(seed)
@@ -184,8 +175,6 @@ class PoINavigationEnv(gym.Env):
         self._prev_target_idx: int = -1
         self._init_agent1_pos: tuple[int, int] = (0, 0)
         self._init_agent2_pos: tuple[int, int] = (0, 0)
-        self._prev_agent1_pos: tuple[int, int] = (0, 0)
-        self._prev_agent2_pos: tuple[int, int] = (0, 0)
 
     # ------------------------------------------------------------------
     # Obstacle generation with connectivity guarantee
@@ -263,8 +252,6 @@ class PoINavigationEnv(gym.Env):
         self._target_poi = self._pois[0]
         self._target_idx = 0
         self._prev_target_idx = -1
-        self._prev_agent1_pos = self._agent1_pos
-        self._prev_agent2_pos = self._agent2_pos
 
         return self._get_obs(), {}
 
@@ -300,8 +287,6 @@ class PoINavigationEnv(gym.Env):
             move1 = int(arr[1])
             move2 = int(arr[2])
 
-        switch_penalty = self.SWITCH_PENALTY if (self._prev_target_idx != -1 and target_idx != self._prev_target_idx) else 0.0
-
         self._prev_target_idx = target_idx
         self._target_idx = target_idx
         self._target_poi = self._pois[target_idx]
@@ -312,7 +297,6 @@ class PoINavigationEnv(gym.Env):
         prev_dist1 = min(target_map.get(self._agent1_pos, float("inf")), max_dist)
         prev_dist2 = min(target_map.get(self._agent2_pos, float("inf")), max_dist)
 
-        old_a1, old_a2 = self._agent1_pos, self._agent2_pos
         if self._agent1_pos != self._target_poi:
             self._agent1_pos = self._try_move(self._agent1_pos, move1)
         if self._agent2_pos != self._target_poi:
@@ -322,41 +306,29 @@ class PoINavigationEnv(gym.Env):
         dist1 = min(target_map.get(self._agent1_pos, float("inf")), max_dist)
         dist2 = min(target_map.get(self._agent2_pos, float("inf")), max_dist)
 
-        te_a = dist1 / max_dist
-        te_h = dist2 / max_dist
-        energy = 0.6 * te_a + 0.4 * te_h
-        privacy = 1.0 - te_h
-        ttm = max(te_a, te_h)
-        cost = sum(w * v for w, v in zip(self.weights, (te_a, te_h, energy, privacy, ttm)))
-
+        # Progress: only reward forward movement, zero if no progress (anti-oscillation)
         progress = (prev_dist1 + prev_dist2 - dist1 - dist2) / (2.0 * max_dist)
-        progress_reward = progress * self.PROGRESS_SCALE
+        progress_reward = max(0.0, progress) * self.PROGRESS_SCALE
 
-        # Oscillation penalty: agent moved back to where it was 1 step ago
-        osc = 0
-        if self._agent1_pos == self._prev_agent1_pos and self._agent1_pos != self._target_poi:
-            osc += 1
-        if self._agent2_pos == self._prev_agent2_pos and self._agent2_pos != self._target_poi:
-            osc += 1
-        oscillation_penalty = osc * self.STEP_PENALTY * 2.0
-        self._prev_agent1_pos = old_a1
-        self._prev_agent2_pos = old_a2
+        both_arrived = (self._agent1_pos == self._target_poi
+                        and self._agent2_pos == self._target_poi)
 
-        # Near-meeting bonus: one agent at POI, other is 1-2 steps away
-        near_bonus = 0.0
-        a1_at = self._agent1_pos == self._target_poi
-        a2_at = self._agent2_pos == self._target_poi
-        if a1_at != a2_at:
-            remaining = dist2 if a1_at else dist1
-            if remaining <= 2.0:
-                near_bonus = self.TERMINAL_BONUS * 0.05 * (3.0 - remaining) / 2.0
+        # Terminal bonus scaled by cost (from initial positions): cheaper POI → bigger reward
+        if both_arrived:
+            init_d1 = min(target_map.get(self._init_agent1_pos, float("inf")), max_dist)
+            init_d2 = min(target_map.get(self._init_agent2_pos, float("inf")), max_dist)
+            te_a = init_d1 / max_dist
+            te_h = init_d2 / max_dist
+            energy = 0.6 * te_a + 0.4 * te_h
+            privacy = 1.0 - te_h
+            ttm = max(te_a, te_h)
+            cost = sum(w * v for w, v in zip(self.weights, (te_a, te_h, energy, privacy, ttm)))
+            terminal_bonus = self.TERMINAL_BONUS * (1.0 + (1.0 - cost))
+        else:
+            cost = 0.0
+            terminal_bonus = 0.0
 
-        both_arrived = a1_at and a2_at
-        terminal_bonus = self.TERMINAL_BONUS if both_arrived else 0.0
-
-        cost_penalty = cost * self.COST_PENALTY_SCALE
-        reward = (progress_reward - self.STEP_PENALTY - switch_penalty
-                  - cost_penalty - oscillation_penalty + near_bonus + terminal_bonus)
+        reward = progress_reward - self.STEP_PENALTY + terminal_bonus
         reward = float(np.clip(reward, -10.0, 10.0))
 
         terminated = both_arrived
