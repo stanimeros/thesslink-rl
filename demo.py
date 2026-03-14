@@ -71,22 +71,30 @@ PANEL_TITLES = ["Q-Learning", "DQN", "PPO"]
 # Load navigation policies
 # ---------------------------------------------------------------------------
 
-PredictFn = Callable[[np.ndarray], int]
+PredictFn = Callable[[np.ndarray], np.ndarray]
+
+
+def _to_flat(action) -> int:
+    """Convert any action format to flat int."""
+    if isinstance(action, (int, np.integer)):
+        return int(action)
+    a = np.asarray(action).ravel()
+    return int(a[0]) * 25 + int(a[1]) * 5 + int(a[2])
 
 
 def _load_ppo(size_tag: str) -> PredictFn:
     from stable_baselines3 import PPO
     model = PPO.load(str(MODEL_DIR / "ppo" / f"nav_ppo_{size_tag}"))
-    def predict(obs: np.ndarray) -> int:
+    def predict(obs: np.ndarray):
         a, _ = model.predict(obs, deterministic=True)
-        return int(a)
+        return a
     return predict
 
 
 def _load_dqn(size_tag: str) -> PredictFn:
     from stable_baselines3 import DQN
     model = DQN.load(str(MODEL_DIR / "dqn" / f"nav_dqn_{size_tag}"))
-    def predict(obs: np.ndarray) -> int:
+    def predict(obs: np.ndarray):
         a, _ = model.predict(obs, deterministic=True)
         return int(a)
     return predict
@@ -96,7 +104,7 @@ def _load_qlearning(size_tag: str) -> PredictFn:
     model_path = MODEL_DIR / "qlearning" / f"nav_qtable_{size_tag}.pkl"
     with open(model_path, "rb") as f:
         q_table: dict = pickle.load(f)
-    def predict(obs: np.ndarray) -> int:
+    def predict(obs: np.ndarray):
         return int(np.argmax(q_table.get(_discretize_nav(obs), np.zeros(_NAV_ACTIONS))))
     return predict
 
@@ -234,7 +242,6 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
     panel_offsets = [(i * panel_w, 0) for i in range(N_PANELS)]
 
     # One PoINavigationEnv per panel (same scenario, independent step state)
-    # max_steps must match training so the observation/reward scale is identical
     max_steps = max(300, rows * cols // 2)
     nav_envs = [PoINavigationEnv(seed=42, grid_size=grid_size, max_steps=max_steps) for _ in range(N_PANELS)]
 
@@ -342,13 +349,13 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
                     continue
                 obs = obs_list[i]
                 a_raw = policy(obs)
+                a_flat = _to_flat(a_raw)
                 # Lock target on first step; afterwards keep it fixed
                 if locked_targets[i] is None:
-                    locked_targets[i] = a_raw // 25
+                    locked_targets[i] = a_flat // 25
                 target = locked_targets[i]
-                # Keep model's move choices but enforce the locked target
-                a = target * 25 + (a_raw % 25)
-                obs, _, terminated, truncated, info = nav_env.step(a)
+                a_flat = target * 25 + (a_flat % 25)
+                obs, _, terminated, truncated, info = nav_env.step(a_flat)
                 obs_list[i] = obs
                 done_flags[i] = terminated or truncated
                 _sync_lbf(lbfs[i], nav_env)

@@ -2,10 +2,8 @@
 """
 Train cooperative navigation with PoINavigationEnv (centralized controller).
 
-A single model sees the full global state (33 floats including POI positions
-for direction awareness) and outputs a joint action that selects the target
-POI and independently moves both agents. Supports three
-algorithm categories:
+A single model sees 35-float relative observations and outputs a joint action
+(MultiDiscrete for PPO, Discrete(75) via FlatActionWrapper for DQN/Q-Learning).
 
   Tabular RL       : Q-Learning  (--algo qlearning)
   Deep Value-based : DQN         (--algo dqn)
@@ -26,13 +24,12 @@ from pathlib import Path
 import numpy as np
 
 from cost_function import cost_optimal_baseline, DEFAULT_WEIGHTS
-from poi_environment import PoINavigationEnv
+from poi_environment import PoINavigationEnv, FlatActionWrapper
 
 MODEL_DIR = Path(__file__).parent / "models"
 
 
 def get_history_path(algo: str, grid_size: int | str) -> Path:
-    """Path to training_history_*.pkl in the model folder."""
     tag = str(grid_size)
     return MODEL_DIR / algo / f"training_history_{algo}_{tag}.pkl"
 
@@ -40,6 +37,14 @@ def get_history_path(algo: str, grid_size: int | str) -> Path:
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _make_env(grid_size, max_steps, env_seed, flat=False):
+    """Factory that returns a callable for SubprocVecEnv."""
+    def _init():
+        env = PoINavigationEnv(seed=env_seed, grid_size=grid_size, max_steps=max_steps)
+        return FlatActionWrapper(env) if flat else env
+    return _init
+
 
 def _eval_navigation(
     predict_fn,
@@ -50,11 +55,7 @@ def _eval_navigation(
 ) -> dict:
     """
     Evaluate a navigation policy.
-    predict_fn(obs) -> action  (single global observation → joint action)
-    Returns dict with mean_reward, mean_cost, cost_success, mean_steps, agreement.
-    cost_success = 1 - cost (clamped to [0,1]); higher = closer to cost-optimal.
-    agreement = fraction of episodes where env target matches cost-optimal baseline.
-    max_steps must match the training env so reward scales are identical.
+    predict_fn(obs) -> action (flat int for DQN/QL, or array for PPO)
     """
     if max_steps is None:
         max_steps = max(300, grid_size[0] * grid_size[1] // 2)
@@ -74,7 +75,6 @@ def _eval_navigation(
         costs.append(info["cost"])
         steps_list.append(info["step"])
 
-        # Agreement: does policy-chosen target match cost-optimal baseline?
         baseline_idx = cost_optimal_baseline(
             env._pois, env._init_agent1_pos, env._init_agent2_pos,
             env._obstacles, DEFAULT_WEIGHTS, env.grid_size
@@ -92,10 +92,6 @@ def _eval_navigation(
 
 
 def _load_history(algo: str, size_tag: str) -> dict:
-    """
-    Load existing training history, or return empty lists if none exists.
-    Also carries extra keys (e.g. epsilon, episodes_done for Q-Learning).
-    """
     path = get_history_path(algo, size_tag)
     if path.exists():
         with open(path, "rb") as f:
@@ -107,13 +103,8 @@ def _load_history(algo: str, size_tag: str) -> dict:
 
 
 def _save_history(
-    steps: list,
-    rewards: list,
-    cost_successes: list,
-    agreements: list,
-    algo: str,
-    size_tag: str,
-    **extra,
+    steps: list, rewards: list, cost_successes: list, agreements: list,
+    algo: str, size_tag: str, **extra,
 ) -> None:
     save_dir = MODEL_DIR / algo
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -121,18 +112,17 @@ def _save_history(
     with open(path, "wb") as f:
         pickle.dump(
             {"steps": steps, "rewards": rewards, "cost_success": cost_successes,
-             "agreement": agreements, **extra},
-            f,
+             "agreement": agreements, **extra}, f,
         )
     print(f"Saved history to {path}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PPO (Policy Gradient — Actor-Critic)
+# PPO — uses native MultiDiscrete([3, 5, 5])
 # ─────────────────────────────────────────────────────────────────────────────
 
 def train_ppo(
-    total_timesteps: int = 200_000,
+    total_timesteps: int = 500_000,
     seed: int = 42,
     eval_freq: int = 25_000,
     grid_size: tuple[int, int] = (64, 64),
@@ -147,15 +137,9 @@ def train_ppo(
 
     max_steps = max(300, grid_size[0] * grid_size[1] // 2)
 
-    def _make_env(env_seed: int):
-        def _init():
-            return PoINavigationEnv(seed=env_seed, grid_size=grid_size, max_steps=max_steps)
-        return _init
+    n_envs = 6
+    env = SubprocVecEnv([_make_env(grid_size, max_steps, seed + i) for i in range(n_envs)])
 
-    n_envs = 6  # match physical core count
-    env = SubprocVecEnv([_make_env(seed + i) for i in range(n_envs)])
-
-    # Load existing history (continues x-axis from where we left off)
     hist = _load_history("ppo", size_tag)
     step_history = hist["steps"]
     reward_history = hist["rewards"]
@@ -167,7 +151,7 @@ def train_ppo(
             if self.num_timesteps % eval_freq == 0:
                 def predict(obs):
                     a, _ = self.model.predict(obs, deterministic=True)
-                    return int(a)
+                    return a
                 stats = _eval_navigation(predict, n_episodes=100, grid_size=grid_size, max_steps=max_steps)
                 reward_history.append(stats["mean_reward"])
                 cost_success_history.append(stats["cost_success"])
@@ -186,9 +170,6 @@ def train_ppo(
                               "ppo", size_tag)
 
     save_path = save_dir / f"nav_ppo_{size_tag}"
-    # n_steps: rollout length per env before each PPO update.
-    # Need n_steps * n_envs >= batch_size (256) and enough steps to see full episodes.
-    # min 2 full episodes worth of steps per env, rounded to nearest 64 for efficiency.
     steps_per_env = max(max_steps * 2, 512)
     n_steps = (steps_per_env // n_envs // 64 + 1) * 64
     if save_path.with_suffix(".zip").exists():
@@ -210,17 +191,17 @@ def train_ppo(
 
     def predict(obs):
         a, _ = model.predict(obs, deterministic=True)
-        return int(a)
+        return a
     stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size, max_steps=max_steps)
     print(f"Final eval — cost_success: {stats['cost_success']:.1%}  reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DQN (Deep Value-based RL)
+# DQN — uses FlatActionWrapper → Discrete(75)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def train_dqn(
-    total_timesteps: int = 200_000,
+    total_timesteps: int = 500_000,
     seed: int = 42,
     eval_freq: int = 25_000,
     grid_size: tuple[int, int] = (64, 64),
@@ -236,14 +217,8 @@ def train_dqn(
     max_steps = max(300, grid_size[0] * grid_size[1] // 2)
 
     n_envs = 6
-    def _make_env(env_seed: int):
-        def _init():
-            return PoINavigationEnv(seed=env_seed, grid_size=grid_size, max_steps=max_steps)
-        return _init
+    env = SubprocVecEnv([_make_env(grid_size, max_steps, seed + i, flat=True) for i in range(n_envs)])
 
-    env = SubprocVecEnv([_make_env(seed + i) for i in range(n_envs)])
-
-    # Load existing history (continues x-axis from where we left off)
     hist = _load_history("dqn", size_tag)
     step_history = hist["steps"]
     reward_history = hist["rewards"]
@@ -300,62 +275,52 @@ def train_dqn(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Q-Learning (Tabular RL)
+# Q-Learning (Tabular RL) — uses flat Discrete(75) actions
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Joint action space: target_idx(0-2) * 25 + move1(0-4) * 5 + move2(0-4)
 _NAV_ACTIONS = 75
 
-# Observation layout (33 floats):
-#   [0:2]  agent1_pos, [2:4] agent2_pos
-#   [4:8]  wall_bits_a1 (N/S/W/E), [8:12] wall_bits_a2
-#   [12:18] poi_positions (poi0_r, poi0_c, poi1_r, poi1_c, poi2_r, poi2_c)
-#   [18:33] cost_components × 3 POIs (5 each: te_a, te_h, energy, privacy, ttm)
-_COST_START = 18
-_COST_STRIDE = 5  # floats per POI
+# Observation layout (35 floats — relative):
+#   [0:6]   delta_a1_to_pois (dr,dc × 3 POIs)
+#   [6:12]  delta_a2_to_pois (dr,dc × 3 POIs)
+#   [12:16] wall_bits_a1 (N/S/W/E)
+#   [16:20] wall_bits_a2 (N/S/W/E)
+#   [20:35] cost_components × 3 POIs (5 each: te_a, te_h, energy, privacy, ttm)
+_COST_START = 20
+_COST_STRIDE = 5
 
 
 def _discretize_nav(obs: np.ndarray) -> int:
     """
     Compact discrete state for tabular Q-Learning.
-    State = (best_poi_idx, wall_bits_a1, dir_a1_to_target, dist_a1, dir_a2_to_target, dist_a2)
-    Total states: 3 × 16 × 8 × 3 × 8 × 3 = 27,648 — still tractable for tabular RL.
+    State = (best_poi, wall_bits_a1, dir_a1→target, dist_a1, dir_a2→target, dist_a2)
+    Total states: 3 × 16 × 8 × 3 × 8 × 3 = 27,648
     """
-    # Best POI: index of POI with lowest weighted cost sum
     costs = [
-        obs[_COST_START + i * _COST_STRIDE] * 0.20   # te_a
-        + obs[_COST_START + i * _COST_STRIDE + 1] * 0.35  # te_h
-        + obs[_COST_START + i * _COST_STRIDE + 2] * 0.10  # energy
-        + obs[_COST_START + i * _COST_STRIDE + 3] * 0.10  # privacy
-        + obs[_COST_START + i * _COST_STRIDE + 4] * 0.25  # ttm
+        obs[_COST_START + i * _COST_STRIDE] * 0.20
+        + obs[_COST_START + i * _COST_STRIDE + 1] * 0.35
+        + obs[_COST_START + i * _COST_STRIDE + 2] * 0.10
+        + obs[_COST_START + i * _COST_STRIDE + 3] * 0.10
+        + obs[_COST_START + i * _COST_STRIDE + 4] * 0.25
         for i in range(3)
     ]
-    best_poi = int(np.argmin(costs))  # 0-2
+    best_poi = int(np.argmin(costs))
 
-    # Wall bits a1: 4 binary bits → integer 0-15
-    wall_bits = int(obs[4]) * 8 + int(obs[5]) * 4 + int(obs[6]) * 2 + int(obs[7])  # 0-15
+    wall_bits = int(obs[12]) * 8 + int(obs[13]) * 4 + int(obs[14]) * 2 + int(obs[15])
 
-    # POI position for the best target
-    poi_r = float(obs[12 + best_poi * 2])
-    poi_c = float(obs[13 + best_poi * 2])
-
-    # Direction from agent1 to best POI (8 octants)
-    a1_r, a1_c = float(obs[0]), float(obs[1])
-    dr1, dc1 = poi_r - a1_r, poi_c - a1_c
+    # Direction a1→best POI from relative deltas (obs[0:6])
+    dr1, dc1 = float(obs[best_poi * 2]), float(obs[best_poi * 2 + 1])
     angle_a1 = int((np.arctan2(dc1, dr1) + np.pi) / (np.pi / 4)) % 8 if (abs(dr1) + abs(dc1)) > 1e-6 else 0
 
-    # Distance bucket agent1→best POI
     te_a = float(obs[_COST_START + best_poi * _COST_STRIDE])
-    dist_a1 = 0 if te_a < 0.15 else (1 if te_a < 0.45 else 2)  # 0-2
+    dist_a1 = 0 if te_a < 0.15 else (1 if te_a < 0.45 else 2)
 
-    # Direction from agent2 to best POI (8 octants)
-    a2_r, a2_c = float(obs[2]), float(obs[3])
-    dr2, dc2 = poi_r - a2_r, poi_c - a2_c
+    # Direction a2→best POI from relative deltas (obs[6:12])
+    dr2, dc2 = float(obs[6 + best_poi * 2]), float(obs[7 + best_poi * 2])
     angle_a2 = int((np.arctan2(dc2, dr2) + np.pi) / (np.pi / 4)) % 8 if (abs(dr2) + abs(dc2)) > 1e-6 else 0
 
-    # Distance bucket agent2→best POI
     te_h = float(obs[_COST_START + best_poi * _COST_STRIDE + 1])
-    dist_a2 = 0 if te_h < 0.15 else (1 if te_h < 0.45 else 2)  # 0-2
+    dist_a2 = 0 if te_h < 0.15 else (1 if te_h < 0.45 else 2)
 
     return (best_poi * (16 * 8 * 3 * 8 * 3)
             + wall_bits * (8 * 3 * 8 * 3)
@@ -366,11 +331,6 @@ def _discretize_nav(obs: np.ndarray) -> int:
 
 
 def _qlearning_worker(args: tuple) -> dict:
-    """
-    Top-level worker for multiprocessing — runs a chunk of Q-Learning episodes.
-    Each worker starts from the same Q-table and explores independently.
-    Returns the updated Q-table dict after running chunk_episodes episodes.
-    """
     (q_table_dict, chunk_episodes, worker_seed,
      alpha, gamma, epsilon, epsilon_end, epsilon_decay, grid_size) = args
 
@@ -401,10 +361,6 @@ def _qlearning_worker(args: tuple) -> dict:
 
 
 def _merge_qtables(tables: list[dict]) -> dict:
-    """
-    Merge Q-tables from parallel workers by element-wise averaging.
-    States visited by only some workers are averaged over those workers only.
-    """
     all_keys = set().union(*tables)
     merged = {}
     for k in all_keys:
@@ -425,11 +381,7 @@ def train_qlearning(
     epsilon_decay: float = 0.99997,
     grid_size: tuple[int, int] = (64, 64),
 ) -> None:
-    """
-    Parallel Q-Learning: each eval_freq chunk is split across n_workers processes
-    that explore independently, then Q-tables are merged by element-wise averaging.
-    Effective episodes = total_episodes; wall-clock time ≈ total_episodes / n_workers.
-    """
+    """Parallel Q-Learning with periodic merge and evaluation."""
     import multiprocessing as mp
     from collections import defaultdict
 
@@ -476,10 +428,7 @@ def train_qlearning(
             results = pool.map(_qlearning_worker, worker_args)
 
         q_table = _merge_qtables(results)
-
-        # Advance epsilon as if chunk_size episodes ran sequentially
         epsilon = max(epsilon_end, epsilon * (epsilon_decay ** chunk_size))
-
         episodes_done_total = episodes_done + (chunk + 1) * chunk_size
 
         q_table_dd = defaultdict(lambda: np.zeros(_NAV_ACTIONS, dtype=np.float32), q_table)
@@ -521,7 +470,7 @@ def main():
     parser.add_argument("--algo", choices=["ppo", "dqn", "qlearning"], default="ppo")
     parser.add_argument("--grid-size", type=int, choices=[8, 32, 64], default=8,
                         help="Grid size (8, 32, or 64)")
-    parser.add_argument("--steps", type=int, default=200_000, help="Timesteps (ppo/dqn)")
+    parser.add_argument("--steps", type=int, default=500_000, help="Timesteps (ppo/dqn)")
     parser.add_argument("--episodes", type=int, default=200_000, help="Episodes (qlearning)")
     parser.add_argument("--workers", type=int, default=6, help="Parallel workers (qlearning)")
     parser.add_argument("--seed", type=int, default=42)
@@ -536,7 +485,7 @@ def main():
         if args.algo == "ppo":
             from stable_baselines3 import PPO
             model = PPO.load(str(MODEL_DIR / "ppo" / f"nav_ppo_{size_tag}"))
-            predict = lambda obs: int(model.predict(obs, deterministic=True)[0])
+            predict = lambda obs: model.predict(obs, deterministic=True)[0]
         elif args.algo == "dqn":
             from stable_baselines3 import DQN
             model = DQN.load(str(MODEL_DIR / "dqn" / f"nav_dqn_{size_tag}"))

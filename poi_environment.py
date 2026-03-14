@@ -2,32 +2,26 @@
 Cooperative multi-agent navigation environment for ThessLink RL.
 
 Centralized controller design: a single "god-camera" model sees the full
-global state (both agent positions, all POIs, obstacles) and outputs a joint
-action that controls both agents independently while selecting a shared target.
+global state and outputs a joint action that controls both agents
+independently while selecting a shared target.
 
-Observation (33 floats — global state):
-    agent1_pos (2) + agent2_pos (2) + wall_bits_a1 (4) + wall_bits_a2 (4)
-    + poi_positions (6) + cost_components × 3 POIs (15)
-    Wall bits encode blocked N/S/W/E directions for each agent.
-    POI positions give explicit direction vectors so the model can navigate.
-    Cost components use BFS distances so the model can select the best POI.
+Observation (35 floats — relative, position-invariant):
+    delta_a1_to_pois (6) + delta_a2_to_pois (6) + wall_bits_a1 (4)
+    + wall_bits_a2 (4) + cost_components × 3 POIs (15)
+    Relative vectors let the policy generalize across positions.
+    Cost components use BFS distances for target selection.
 
-Action: Discrete(75) — joint (target_idx, move1, move2)
-    target_idx ∈ {0,1,2}  — which POI both agents navigate to
-    move1      ∈ {0..4}   — agent1 movement (NONE,N,S,W,E)
-    move2      ∈ {0..4}   — agent2 movement (NONE,N,S,W,E)
-    Encoding:  action = target_idx * 25 + move1 * 5 + move2
+Action: MultiDiscrete([3, 5, 5])
+    [0] target_idx ∈ {0,1,2}  — which POI both agents navigate to
+    [1] move1      ∈ {0..4}   — agent1 movement (NONE,N,S,W,E)
+    [2] move2      ∈ {0..4}   — agent2 movement (NONE,N,S,W,E)
 
 Reward: shared
-    +progress        — reward for each step that reduces total BFS distance to target
-                        progress = (prev_dist1 + prev_dist2 - dist1 - dist2) / (2 * max_dist) * PROGRESS_SCALE
+    +progress        — reward for each step that reduces total BFS distance
     -STEP_PENALTY    — per-step penalty = TERMINAL_BONUS / (2 * max_steps)
-                        guarantees: total_step_penalty < TERMINAL_BONUS always
     -SWITCH_PENALTY  — target-switch penalty = TERMINAL_BONUS * 0.10 per switch
     +TERMINAL_BONUS  — bonus (5.0) when both agents reach the target
 Episode ends when both agents reach chosen target or max_steps exceeded.
-The cost components in the observation allow the model to learn which POI
-has the lowest cost and navigate there.
 """
 from __future__ import annotations
 
@@ -42,6 +36,8 @@ from cost_function import DEFAULT_WEIGHTS
 # Movement deltas: NONE, NORTH, SOUTH, WEST, EAST
 _MOVES = [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)]
 _DIRS = _MOVES[1:]  # cardinal directions only
+
+_OBS_DIM = 35
 
 
 def _wall_bits(
@@ -65,10 +61,7 @@ def _bfs_dist_map(
     rows: int,
     cols: int,
 ) -> dict[tuple[int, int], float]:
-    """
-    BFS from source. Returns {cell: distance} for all reachable free cells.
-    Unreachable cells are absent (caller should use .get(pos, inf)).
-    """
+    """BFS from source. Returns {cell: distance} for all reachable free cells."""
     dist: dict[tuple[int, int], float] = {source: 0.0}
     queue: deque[tuple[int, int]] = deque([source])
     while queue:
@@ -91,30 +84,33 @@ def _build_global_obs(
     obstacles: FrozenSet[tuple[int, int]],
 ) -> np.ndarray:
     """
-    Build 33-float global observation for the centralized controller:
-      agent1_pos(2) + agent2_pos(2) + wall_bits_a1(4) + wall_bits_a2(4)
-      + poi_positions(6) + cost_components×3_POIs(15)
+    Build 35-float relative observation:
+      delta_a1_to_pois(6) + delta_a2_to_pois(6) + wall_bits_a1(4)
+      + wall_bits_a2(4) + cost_components×3_POIs(15)
 
-    POI positions give the model explicit direction vectors so it can
-    navigate toward a target (without them the model only knows scalar
-    distance and cannot determine which way to move).
-
-    Cost components per POI (5 floats each):
-      te_a (agent1 BFS dist), te_h (agent2 BFS dist),
-      energy, privacy, ttm
+    Relative vectors make the policy position-invariant: it sees
+    "POI is 3 cells north" instead of "agent at (2,4), POI at (5,4)".
     """
     rows, cols = grid_size
     max_dist = float(rows + cols)
-    a1_norm = np.array([agent1_pos[0] / max(rows - 1, 1), agent1_pos[1] / max(cols - 1, 1)], dtype=np.float32)
-    a2_norm = np.array([agent2_pos[0] / max(rows - 1, 1), agent2_pos[1] / max(cols - 1, 1)], dtype=np.float32)
-    walls_a1 = np.array(_wall_bits(agent1_pos, obstacles, rows, cols), dtype=np.float32)
-    walls_a2 = np.array(_wall_bits(agent2_pos, obstacles, rows, cols), dtype=np.float32)
-    # Normalized POI positions — lets the model compute direction to target
-    poi_pos = np.array(
-        [coord / max(dim - 1, 1) for poi in pois for coord, dim in zip(poi, (rows, cols))],
+    scale_r, scale_c = max(rows - 1, 1), max(cols - 1, 1)
+
+    # Relative vectors: agent → each POI, normalized to [-1, 1]
+    deltas_a1 = np.array(
+        [(poi[0] - agent1_pos[0]) / scale_r for poi in pois for _ in ''].__class__(
+            (v for poi in pois for v in ((poi[0] - agent1_pos[0]) / scale_r, (poi[1] - agent1_pos[1]) / scale_c))
+        ),
         dtype=np.float32,
     )
-    parts = [a1_norm, a2_norm, walls_a1, walls_a2, poi_pos]
+    deltas_a2 = np.array(
+        list(v for poi in pois for v in ((poi[0] - agent2_pos[0]) / scale_r, (poi[1] - agent2_pos[1]) / scale_c)),
+        dtype=np.float32,
+    )
+
+    walls_a1 = np.array(_wall_bits(agent1_pos, obstacles, rows, cols), dtype=np.float32)
+    walls_a2 = np.array(_wall_bits(agent2_pos, obstacles, rows, cols), dtype=np.float32)
+
+    parts = [deltas_a1, deltas_a2, walls_a1, walls_a2]
     for dist_map in poi_dist_maps:
         dist_a = min(dist_map.get(agent1_pos, float("inf")), max_dist)
         dist_h = min(dist_map.get(agent2_pos, float("inf")), max_dist)
@@ -134,6 +130,8 @@ class PoINavigationEnv(gym.Env):
     A single "god-camera" controller observes the full global state and
     outputs a joint action: target POI + independent moves for both agents.
     Both agents navigate to the same chosen POI.
+
+    Action space: MultiDiscrete([3, 5, 5])
     """
 
     metadata = {"render_modes": []}
@@ -156,22 +154,18 @@ class PoINavigationEnv(gym.Env):
         self.max_steps = max_steps
         self.weights = DEFAULT_WEIGHTS if weights is None else weights
 
-        # Reward constants — scaled so total_step_penalty < terminal_bonus always:
-        #   STEP_PENALTY = terminal_bonus / (2 * max_steps)
-        #   → max total step penalty = terminal_bonus / 2  (always < terminal_bonus)
+        # Reward constants — scaled so total_step_penalty < terminal_bonus always
         self.TERMINAL_BONUS = terminal_bonus
         self.STEP_PENALTY = terminal_bonus / (2.0 * max_steps)
         self.SWITCH_PENALTY = terminal_bonus * switch_penalty_frac
         self.PROGRESS_SCALE = progress_scale
 
-        # Global observation: agent1_pos(2) + agent2_pos(2) + wall_bits×2(8)
-        #                     + poi_positions(6) + cost_components×3_POIs(15) = 33
+        # Observation: 35 floats in [-1, 1]
         self.observation_space = gym.spaces.Box(
-            low=0.0, high=1.0, shape=(33,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(_OBS_DIM,), dtype=np.float32
         )
-        # Joint action: target_idx * 25 + move1 * 5 + move2
-        # target_idx ∈ {0,1,2}, move1/move2 ∈ {NONE,N,S,W,E}
-        self.action_space = gym.spaces.Discrete(75)
+        # MultiDiscrete: [target_idx, move1, move2]
+        self.action_space = gym.spaces.MultiDiscrete([3, 5, 5])
 
         self._rng = np.random.default_rng(seed)
         self._agent1_pos: tuple[int, int] = (0, 0)
@@ -181,10 +175,9 @@ class PoINavigationEnv(gym.Env):
         self._obstacles: FrozenSet[tuple[int, int]] = frozenset()
         self._step_count: int = 0
 
-        # BFS distance maps from each POI — rebuilt once per episode
         self._poi_dist_maps: list[dict[tuple[int, int], float]] = []
         self._target_idx: int = 0
-        self._prev_target_idx: int = -1  # -1 = no previous target (first step)
+        self._prev_target_idx: int = -1
         self._init_agent1_pos: tuple[int, int] = (0, 0)
         self._init_agent2_pos: tuple[int, int] = (0, 0)
 
@@ -195,13 +188,6 @@ class PoINavigationEnv(gym.Env):
     def _generate_obstacles(
         self, occupied: set[tuple[int, int]]
     ) -> FrozenSet[tuple[int, int]]:
-        """
-        Generate random obstacles with a connectivity guarantee.
-        Place obstacles randomly, BFS from agent1's position (the connectivity
-        anchor), then convert any unreachable free cells to obstacles so all
-        remaining free cells form one connected component.
-        Occupied cells (agents, POIs) are never made into obstacles.
-        """
         total = self.rows * self.cols
         n_obs = int(total * self.obstacle_density)
         candidates = [
@@ -213,8 +199,6 @@ class PoINavigationEnv(gym.Env):
         chosen = self._rng.choice(len(candidates), size=min(n_obs, len(candidates)), replace=False)
         obstacles: set[tuple[int, int]] = {candidates[i] for i in chosen}
 
-        # BFS from an occupied cell (agent1) so the main component is anchored
-        # to where agents and POIs live, not an arbitrary free cell.
         free_start = self._agent1_pos
         visited: set[tuple[int, int]] = {free_start}
         queue: deque[tuple[int, int]] = deque([free_start])
@@ -231,17 +215,13 @@ class PoINavigationEnv(gym.Env):
                     visited.add(nb)
                     queue.append(nb)
 
-        # Convert unreachable free cells to obstacles so every remaining free
-        # cell is reachable from the agents/POIs (one connected component).
         all_free = {
             (r, c)
             for r in range(self.rows)
             for c in range(self.cols)
             if (r, c) not in obstacles
         }
-        isolated = all_free - visited
-        obstacles |= isolated
-
+        obstacles |= all_free - visited
         return frozenset(obstacles)
 
     # ------------------------------------------------------------------
@@ -270,26 +250,23 @@ class PoINavigationEnv(gym.Env):
         self._init_agent1_pos = self._agent1_pos
         self._init_agent2_pos = self._agent2_pos
 
-        # Build BFS distance maps from each POI
         self._poi_dist_maps = [
             _bfs_dist_map(poi, self._obstacles, self.rows, self.cols) for poi in self._pois
         ]
         self._step_count = 0
-        self._target_poi = self._pois[0]  # placeholder until first step
+        self._target_poi = self._pois[0]
         self._target_idx = 0
-        self._prev_target_idx = -1  # reset: no penalty on the first step
+        self._prev_target_idx = -1
 
         return self._get_obs(), {}
 
     def _get_obs(self) -> np.ndarray:
-        """Returns the 33-float global observation."""
         return _build_global_obs(
             self._agent1_pos, self._agent2_pos,
             self._pois, self._poi_dist_maps, self.grid_size, self._obstacles,
         )
 
     def _try_move(self, pos: tuple[int, int], action: int) -> tuple[int, int]:
-        """Apply action, return new position (stays if wall/obstacle)."""
         dr, dc = _MOVES[action]
         nr, nc = pos[0] + dr, pos[1] + dc
         if 0 <= nr < self.rows and 0 <= nc < self.cols and (nr, nc) not in self._obstacles:
@@ -298,22 +275,23 @@ class PoINavigationEnv(gym.Env):
 
     def step(
         self,
-        action: int,
+        action: np.ndarray | list | int,
     ) -> tuple[np.ndarray, float, bool, bool, dict]:
         """
-        action: joint int encoding (target_idx * 25 + move1 * 5 + move2)
-          target_idx — which POI both agents navigate to (0-2)
-          move1      — agent1 movement direction (0-4: NONE,N,S,W,E)
-          move2      — agent2 movement direction (0-4: NONE,N,S,W,E)
-
-        Returns: (obs, shared_reward, terminated, truncated, info)
+        action: MultiDiscrete [target_idx, move1, move2]
+                OR flat int (target_idx * 25 + move1 * 5 + move2) for backwards compat.
         """
-        a = int(action)
-        target_idx = min(a // 25, 2)
-        move1 = (a % 25) // 5
-        move2 = a % 5
+        if isinstance(action, (int, np.integer)):
+            a = int(action)
+            target_idx = min(a // 25, 2)
+            move1 = (a % 25) // 5
+            move2 = a % 5
+        else:
+            arr = np.asarray(action, dtype=int).ravel()
+            target_idx = int(arr[0])
+            move1 = int(arr[1])
+            move2 = int(arr[2])
 
-        # Apply switch penalty before updating target
         switch_penalty = self.SWITCH_PENALTY if (self._prev_target_idx != -1 and target_idx != self._prev_target_idx) else 0.0
 
         self._prev_target_idx = target_idx
@@ -323,22 +301,18 @@ class PoINavigationEnv(gym.Env):
         max_dist = float(self.rows + self.cols)
         target_map = self._poi_dist_maps[target_idx]
 
-        # Record distances before moving (for progress shaping)
         prev_dist1 = min(target_map.get(self._agent1_pos, float("inf")), max_dist)
         prev_dist2 = min(target_map.get(self._agent2_pos, float("inf")), max_dist)
 
-        # Once an agent reaches the target it waits there for the other agent.
         if self._agent1_pos != self._target_poi:
             self._agent1_pos = self._try_move(self._agent1_pos, move1)
         if self._agent2_pos != self._target_poi:
             self._agent2_pos = self._try_move(self._agent2_pos, move2)
         self._step_count += 1
 
-        # BFS distance to chosen target after moving
         dist1 = min(target_map.get(self._agent1_pos, float("inf")), max_dist)
         dist2 = min(target_map.get(self._agent2_pos, float("inf")), max_dist)
 
-        # Cost for the observation info (still computed for evaluation)
         te_a = dist1 / max_dist
         te_h = dist2 / max_dist
         energy = 0.2 + 0.6 * te_h
@@ -346,7 +320,6 @@ class PoINavigationEnv(gym.Env):
         ttm = max(te_a, te_h)
         cost = sum(w * v for w, v in zip(self.weights, (te_a, te_h, energy, privacy, ttm)))
 
-        # Progress reward: positive when agents move closer to target this step
         progress = (prev_dist1 + prev_dist2 - dist1 - dist2) / (2.0 * max_dist)
         progress_reward = progress * self.PROGRESS_SCALE
 
@@ -371,3 +344,15 @@ class PoINavigationEnv(gym.Env):
             "cost": cost,
         }
         return self._get_obs(), reward, terminated, truncated, info
+
+
+class FlatActionWrapper(gym.ActionWrapper):
+    """Wraps MultiDiscrete([3,5,5]) env with Discrete(75) for DQN / Q-Learning."""
+
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        self.action_space = gym.spaces.Discrete(75)
+
+    def action(self, act: int) -> np.ndarray:
+        a = int(act)
+        return np.array([a // 25, (a % 25) // 5, a % 5], dtype=int)
