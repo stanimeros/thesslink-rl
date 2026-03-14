@@ -60,7 +60,7 @@ def _eval_navigation(
     if max_steps is None:
         max_steps = max(300, grid_size[0] * grid_size[1] // 2)
     rng = np.random.default_rng(seed)
-    rewards, costs, steps_list, agreements = [], [], [], []
+    rewards, steps_list, agreements = [], [], []
 
     for _ in range(n_episodes):
         ep_seed = int(rng.integers(0, 2**31))
@@ -83,15 +83,11 @@ def _eval_navigation(
                 first_target_idx = info["target_idx"]
             done = terminated or truncated
         rewards.append(ep_reward)
-        costs.append(info["cost"])
         steps_list.append(info["step"])
         agreements.append(float(first_target_idx == baseline_idx))
 
-    cost_successes = [max(0.0, 1.0 - c) for c in costs]
     return {
         "mean_reward": float(np.mean(rewards)),
-        "mean_cost": float(np.mean(costs)),
-        "cost_success": float(np.mean(cost_successes)),
         "mean_steps": float(np.mean(steps_list)),
         "agreement": float(np.mean(agreements)),
     }
@@ -105,11 +101,11 @@ def _load_history(algo: str, size_tag: str) -> dict:
         n = len(data.get("steps", []))
         print(f"  Resuming: loaded {n} existing checkpoints from {path.name}")
         return data
-    return {"steps": [], "rewards": [], "cost_success": [], "agreement": []}
+    return {"steps": [], "rewards": [], "agreement": []}
 
 
 def _save_history(
-    steps: list, rewards: list, cost_successes: list, agreements: list,
+    steps: list, rewards: list, agreements: list,
     algo: str, size_tag: str, **extra,
 ) -> None:
     save_dir = MODEL_DIR / algo
@@ -117,7 +113,7 @@ def _save_history(
     path = save_dir / f"training_history_{algo}_{size_tag}.pkl"
     with open(path, "wb") as f:
         pickle.dump(
-            {"steps": steps, "rewards": rewards, "cost_success": cost_successes,
+            {"steps": steps, "rewards": rewards,
              "agreement": agreements, **extra}, f,
         )
     print(f"Saved history to {path}")
@@ -149,7 +145,6 @@ def train_ppo(
     hist = _load_history("ppo", size_tag)
     step_history = hist["steps"]
     reward_history = hist["rewards"]
-    cost_success_history = hist["cost_success"]
     agreement_history = hist["agreement"]
 
     class _Callback(BaseCallback):
@@ -160,19 +155,18 @@ def train_ppo(
                     return a
                 stats = _eval_navigation(predict, n_episodes=100, grid_size=grid_size, max_steps=max_steps)
                 reward_history.append(stats["mean_reward"])
-                cost_success_history.append(stats["cost_success"])
                 agreement_history.append(stats["agreement"])
                 step_history.append(self.num_timesteps)
                 print(
                     f"  [{self.num_timesteps:>8}] reward={stats['mean_reward']:.3f}"
-                    f"  cost_success={stats['cost_success']:.1%}"
+                    f"  agreement={stats['agreement']:.1%}"
                     f"  steps={stats['mean_steps']:.1f}"
                 )
             return True
 
         def _on_training_end(self):
             if reward_history:
-                _save_history(step_history, reward_history, cost_success_history, agreement_history,
+                _save_history(step_history, reward_history, agreement_history,
                               "ppo", size_tag)
 
     save_path = save_dir / f"nav_ppo_{size_tag}"
@@ -199,7 +193,7 @@ def train_ppo(
         a, _ = model.predict(obs, deterministic=True)
         return a
     stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size, max_steps=max_steps)
-    print(f"Final eval — cost_success: {stats['cost_success']:.1%}  reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
+    print(f"Final eval — reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -228,7 +222,6 @@ def train_dqn(
     hist = _load_history("dqn", size_tag)
     step_history = hist["steps"]
     reward_history = hist["rewards"]
-    cost_success_history = hist["cost_success"]
     agreement_history = hist["agreement"]
 
     class _Callback(BaseCallback):
@@ -239,19 +232,18 @@ def train_dqn(
                     return int(a)
                 stats = _eval_navigation(predict, n_episodes=100, grid_size=grid_size, max_steps=max_steps)
                 reward_history.append(stats["mean_reward"])
-                cost_success_history.append(stats["cost_success"])
                 agreement_history.append(stats["agreement"])
                 step_history.append(self.num_timesteps)
                 print(
                     f"  [{self.num_timesteps:>8}] reward={stats['mean_reward']:.3f}"
-                    f"  cost_success={stats['cost_success']:.1%}"
+                    f"  agreement={stats['agreement']:.1%}"
                     f"  steps={stats['mean_steps']:.1f}"
                 )
             return True
 
         def _on_training_end(self):
             if reward_history:
-                _save_history(step_history, reward_history, cost_success_history, agreement_history,
+                _save_history(step_history, reward_history, agreement_history,
                               "dqn", size_tag)
 
     save_path = save_dir / f"nav_dqn_{size_tag}"
@@ -277,7 +269,7 @@ def train_dqn(
         a, _ = model.predict(obs, deterministic=True)
         return int(a)
     stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size, max_steps=max_steps)
-    print(f"Final eval — cost_success: {stats['cost_success']:.1%}  reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
+    print(f"Final eval — reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -412,7 +404,6 @@ def train_qlearning(
     hist = _load_history("qlearning", size_tag)
     step_history: list = hist["steps"]
     reward_history: list = hist["rewards"]
-    cost_success_history: list = hist["cost_success"]
     agreement_history: list = hist["agreement"]
 
     if model_path.exists():
@@ -457,12 +448,11 @@ def train_qlearning(
             return int(np.argmax(_qt[_discretize_nav(obs)]))
         stats = _eval_navigation(predict, n_episodes=100, grid_size=grid_size, max_steps=max_steps)
         reward_history.append(stats["mean_reward"])
-        cost_success_history.append(stats["cost_success"])
         agreement_history.append(stats["agreement"])
         step_history.append(episodes_done_total)
         print(
             f"  Episode {episodes_done_total:>8}: reward={stats['mean_reward']:.3f}"
-            f"  cost_success={stats['cost_success']:.1%}"
+            f"  agreement={stats['agreement']:.1%}"
             f"  ε={epsilon:.4f}"
         )
 
@@ -470,7 +460,7 @@ def train_qlearning(
         pickle.dump(q_table, f)
     print(f"Saved Q-table to {model_path}")
 
-    _save_history(step_history, reward_history, cost_success_history, agreement_history,
+    _save_history(step_history, reward_history, agreement_history,
                   "qlearning", size_tag,
                   epsilon=epsilon,
                   episodes_done=episodes_done + total_episodes)
@@ -479,7 +469,7 @@ def train_qlearning(
     def predict(obs, _qt=q_table_dd):
         return int(np.argmax(_qt[_discretize_nav(obs)]))
     stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size, max_steps=max_steps)
-    print(f"Final eval — cost_success: {stats['cost_success']:.1%}  reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
+    print(f"Final eval — reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -518,7 +508,7 @@ def main():
             predict = lambda obs: int(np.argmax(q_table.get(_discretize_nav(obs), np.zeros(_NAV_ACTIONS))))
         eval_max_steps = max(300, grid_size[0] * grid_size[1] // 2)
         stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size, max_steps=eval_max_steps)
-        print(f"Cost success: {stats['cost_success']:.1%}  Reward: {stats['mean_reward']:.3f}  Steps: {stats['mean_steps']:.1f}  Agreement: {stats['agreement']:.1%}")
+        print(f"Reward: {stats['mean_reward']:.3f}  Agreement: {stats['agreement']:.1%}  Steps: {stats['mean_steps']:.1f}")
         return
 
     print(f"Training navigation with {args.algo.upper()} on {size_tag}x{size_tag} grid...")
