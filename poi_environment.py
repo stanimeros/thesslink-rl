@@ -17,11 +17,13 @@ Action: MultiDiscrete([3, 5, 5])
     [2] move2      ∈ {0..4}   — agent2 movement (NONE,N,S,W,E)
 
 Reward: shared
-    +progress        — reward for each step that reduces total BFS distance
-    -STEP_PENALTY    — per-step penalty = TERMINAL_BONUS / (2 * max_steps)
-    -SWITCH_PENALTY  — target-switch penalty = TERMINAL_BONUS * 0.05 per switch
-    -cost_penalty    — weighted cost of current target × COST_PENALTY_SCALE
-    +TERMINAL_BONUS  — bonus (5.0) when both agents reach the target
+    +progress            — reward for each step that reduces total BFS distance
+    -STEP_PENALTY        — per-step penalty = TERMINAL_BONUS / (2 * max_steps)
+    -SWITCH_PENALTY      — target-switch penalty = TERMINAL_BONUS * 0.05 per switch
+    -oscillation_penalty — 2× STEP_PENALTY per agent that returns to its previous cell
+    -cost_penalty        — weighted cost of current target × COST_PENALTY_SCALE
+    +near_bonus          — small bonus when one agent is at POI and other is 1-2 steps away
+    +TERMINAL_BONUS      — bonus (5.0) when both agents reach the target
 Episode ends when both agents reach chosen target or max_steps exceeded.
 """
 from __future__ import annotations
@@ -182,6 +184,8 @@ class PoINavigationEnv(gym.Env):
         self._prev_target_idx: int = -1
         self._init_agent1_pos: tuple[int, int] = (0, 0)
         self._init_agent2_pos: tuple[int, int] = (0, 0)
+        self._prev_agent1_pos: tuple[int, int] = (0, 0)
+        self._prev_agent2_pos: tuple[int, int] = (0, 0)
 
     # ------------------------------------------------------------------
     # Obstacle generation with connectivity guarantee
@@ -259,6 +263,8 @@ class PoINavigationEnv(gym.Env):
         self._target_poi = self._pois[0]
         self._target_idx = 0
         self._prev_target_idx = -1
+        self._prev_agent1_pos = self._agent1_pos
+        self._prev_agent2_pos = self._agent2_pos
 
         return self._get_obs(), {}
 
@@ -306,6 +312,7 @@ class PoINavigationEnv(gym.Env):
         prev_dist1 = min(target_map.get(self._agent1_pos, float("inf")), max_dist)
         prev_dist2 = min(target_map.get(self._agent2_pos, float("inf")), max_dist)
 
+        old_a1, old_a2 = self._agent1_pos, self._agent2_pos
         if self._agent1_pos != self._target_poi:
             self._agent1_pos = self._try_move(self._agent1_pos, move1)
         if self._agent2_pos != self._target_poi:
@@ -325,11 +332,31 @@ class PoINavigationEnv(gym.Env):
         progress = (prev_dist1 + prev_dist2 - dist1 - dist2) / (2.0 * max_dist)
         progress_reward = progress * self.PROGRESS_SCALE
 
-        both_arrived = (self._agent1_pos == self._target_poi and self._agent2_pos == self._target_poi)
+        # Oscillation penalty: agent moved back to where it was 1 step ago
+        osc = 0
+        if self._agent1_pos == self._prev_agent1_pos and self._agent1_pos != self._target_poi:
+            osc += 1
+        if self._agent2_pos == self._prev_agent2_pos and self._agent2_pos != self._target_poi:
+            osc += 1
+        oscillation_penalty = osc * self.STEP_PENALTY * 2.0
+        self._prev_agent1_pos = old_a1
+        self._prev_agent2_pos = old_a2
+
+        # Near-meeting bonus: one agent at POI, other is 1-2 steps away
+        near_bonus = 0.0
+        a1_at = self._agent1_pos == self._target_poi
+        a2_at = self._agent2_pos == self._target_poi
+        if a1_at != a2_at:
+            remaining = dist2 if a1_at else dist1
+            if remaining <= 2.0:
+                near_bonus = self.TERMINAL_BONUS * 0.05 * (3.0 - remaining) / 2.0
+
+        both_arrived = a1_at and a2_at
         terminal_bonus = self.TERMINAL_BONUS if both_arrived else 0.0
 
         cost_penalty = cost * self.COST_PENALTY_SCALE
-        reward = progress_reward - self.STEP_PENALTY - switch_penalty - cost_penalty + terminal_bonus
+        reward = (progress_reward - self.STEP_PENALTY - switch_penalty
+                  - cost_penalty - oscillation_penalty + near_bonus + terminal_bonus)
         reward = float(np.clip(reward, -10.0, 10.0))
 
         terminated = both_arrived
