@@ -1,7 +1,7 @@
 """
 Cooperative multi-agent navigation environment for ThessLink RL.
 
-Centralized controller design: a single "god-camera" model sees the full
+Centralized controller design: a single model sees the full
 global state and outputs a joint action that moves both agents independently.
 The agents are NOT told which POI to navigate to — the reward function
 guides them toward the cost-optimal POI.
@@ -127,7 +127,7 @@ class PoINavigationEnv(gym.Env):
     """
     Centralized cooperative navigation environment.
 
-    A single "god-camera" controller observes the full global state and
+    A single controller observes the full global state and
     outputs a joint action: independent moves for both agents.
     The reward function guides agents toward the cost-optimal POI.
 

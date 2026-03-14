@@ -6,7 +6,7 @@
 
 ## Overview
 
-- **Architecture:** Centralized "god-camera" controller — a single policy observes both agents and outputs a joint movement action
+- **Architecture:** Centralized controller — a single policy observes both agents and outputs a joint movement action
 - **Environment:** Grid with ~10% static obstacles (connectivity guaranteed), supports 8×8, 32×32, 64×64
 - **Goal:** Both agents navigate to the same POI (out of 3 candidates)
 - **Target POI:** No explicit target selection — the reward function guides agents toward the cost-optimal POI via progress reward + cost-scaled terminal bonus
