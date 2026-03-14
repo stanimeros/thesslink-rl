@@ -138,7 +138,7 @@ def _make_badge_fn(
     """
     rows, cols = nav_env.grid_size
 
-    def draw_badge(row: int, col: int, level: int) -> None:
+    def draw_badge(row: int, col: int, _level: int) -> None:
         cell = (row, col)
         obstacles = nav_env._obstacles
         model_target = nav_env._target_poi
