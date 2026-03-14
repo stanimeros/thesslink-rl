@@ -6,6 +6,16 @@ Cost components and POI suggestion helpers.
 - cost_optimal_baseline: POI that minimizes cost
 
 Uses BFS everywhere for consistency with the RL environment.
+
+Cost components (all normalized to [0, 1]):
+  te_a    — travel effort agent (robot):  dist_agent / max_dist
+  te_h    — travel effort human:          dist_human / max_dist
+  energy  — combined locomotion energy:   0.6 * te_a + 0.4 * te_h
+            (robot weighs more: batteries vs human effort)
+  privacy — location-disclosure risk:     1 - te_h
+            POI near the human → reveals their location → high cost.
+            POI far from the human → protects privacy → low cost.
+  ttm     — time to meet:                max(te_a, te_h)
 """
 from __future__ import annotations
 
@@ -15,7 +25,7 @@ from typing import List, Tuple
 import numpy as np
 
 # Weights: (w_travel_effort_agent, w_travel_effort_human, w_energy, w_privacy, w_time_to_meet)
-DEFAULT_WEIGHTS = (0.20, 0.35, 0.10, 0.10, 0.25)
+DEFAULT_WEIGHTS = (0.15, 0.25, 0.15, 0.15, 0.30)
 
 _DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
@@ -57,7 +67,7 @@ def cost_components(
     dist_h = min(bfs_distance(human_pos, poi, obstacles, grid_size), max_dist)
     te_a = dist_a / max_dist
     te_h = dist_h / max_dist
-    energy = 0.2 + 0.6 * te_h
+    energy = 0.6 * te_a + 0.4 * te_h
     privacy = 1.0 - te_h
     ttm = max(te_a, te_h)
     return te_a, te_h, energy, privacy, ttm

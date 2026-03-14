@@ -8,8 +8,8 @@ independently while selecting a shared target.
 Observation (35 floats — relative, position-invariant):
     delta_a1_to_pois (6) + delta_a2_to_pois (6) + wall_bits_a1 (4)
     + wall_bits_a2 (4) + cost_components × 3 POIs (15)
-    Relative vectors let the policy generalize across positions.
-    Cost components use BFS distances for target selection.
+    Relative vectors (in [-1,1]) let the policy generalize across positions.
+    Cost components (in [0,1]) use BFS distances for target selection.
 
 Action: MultiDiscrete([3, 5, 5])
     [0] target_idx ∈ {0,1,2}  — which POI both agents navigate to
@@ -20,6 +20,7 @@ Reward: shared
     +progress        — reward for each step that reduces total BFS distance
     -STEP_PENALTY    — per-step penalty = TERMINAL_BONUS / (2 * max_steps)
     -SWITCH_PENALTY  — target-switch penalty = TERMINAL_BONUS * 0.05 per switch
+    -cost_penalty    — weighted cost of current target × COST_PENALTY_SCALE
     +TERMINAL_BONUS  — bonus (5.0) when both agents reach the target
 Episode ends when both agents reach chosen target or max_steps exceeded.
 """
@@ -116,7 +117,7 @@ def _build_global_obs(
         dist_h = min(dist_map.get(agent2_pos, float("inf")), max_dist)
         te_a = dist_a / max_dist
         te_h = dist_h / max_dist
-        energy = 0.2 + 0.6 * te_h
+        energy = 0.6 * te_a + 0.4 * te_h
         privacy = 1.0 - te_h
         ttm = max(te_a, te_h)
         parts.append(np.array([te_a, te_h, energy, privacy, ttm], dtype=np.float32))
@@ -146,6 +147,7 @@ class PoINavigationEnv(gym.Env):
         terminal_bonus: float = 5.0,
         switch_penalty_frac: float = 0.05,
         progress_scale: float = 2.0,
+        cost_penalty_scale: float = 0.3,
     ):
         super().__init__()
         self.grid_size = grid_size
@@ -154,13 +156,13 @@ class PoINavigationEnv(gym.Env):
         self.max_steps = max_steps
         self.weights = DEFAULT_WEIGHTS if weights is None else weights
 
-        # Reward constants — scaled so total_step_penalty < terminal_bonus always
         self.TERMINAL_BONUS = terminal_bonus
         self.STEP_PENALTY = terminal_bonus / (2.0 * max_steps)
         self.SWITCH_PENALTY = terminal_bonus * switch_penalty_frac
         self.PROGRESS_SCALE = progress_scale
+        self.COST_PENALTY_SCALE = cost_penalty_scale
 
-        # Observation: 35 floats in [-1, 1]
+        # Observation: 35 floats — deltas in [-1,1], cost components in [0,1]
         self.observation_space = gym.spaces.Box(
             low=-1.0, high=1.0, shape=(_OBS_DIM,), dtype=np.float32
         )
@@ -315,7 +317,7 @@ class PoINavigationEnv(gym.Env):
 
         te_a = dist1 / max_dist
         te_h = dist2 / max_dist
-        energy = 0.2 + 0.6 * te_h
+        energy = 0.6 * te_a + 0.4 * te_h
         privacy = 1.0 - te_h
         ttm = max(te_a, te_h)
         cost = sum(w * v for w, v in zip(self.weights, (te_a, te_h, energy, privacy, ttm)))
@@ -326,7 +328,8 @@ class PoINavigationEnv(gym.Env):
         both_arrived = (self._agent1_pos == self._target_poi and self._agent2_pos == self._target_poi)
         terminal_bonus = self.TERMINAL_BONUS if both_arrived else 0.0
 
-        reward = progress_reward - self.STEP_PENALTY - switch_penalty + terminal_bonus
+        cost_penalty = cost * self.COST_PENALTY_SCALE
+        reward = progress_reward - self.STEP_PENALTY - switch_penalty - cost_penalty + terminal_bonus
         reward = float(np.clip(reward, -10.0, 10.0))
 
         terminated = both_arrived

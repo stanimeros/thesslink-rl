@@ -333,10 +333,6 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
         render_frame(badge_fns)
         time.sleep(1)
 
-        # Lock each panel's target to the first action the model picks, then only move
-        locked_targets: list[int | None] = [None] * N_PANELS
-
-        # Step all envs until all are done
         done_flags = [False] * N_PANELS
         while not all(done_flags):
             if not viewer.isopen:
@@ -350,11 +346,6 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
                 obs = obs_list[i]
                 a_raw = policy(obs)
                 a_flat = _to_flat(a_raw)
-                # Lock target on first step; afterwards keep it fixed
-                if locked_targets[i] is None:
-                    locked_targets[i] = a_flat // 25
-                target = locked_targets[i]
-                a_flat = target * 25 + (a_flat % 25)
                 obs, _, terminated, truncated, info = nav_env.step(a_flat)
                 obs_list[i] = obs
                 done_flags[i] = terminated or truncated

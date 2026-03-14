@@ -59,27 +59,33 @@ def _eval_navigation(
     """
     if max_steps is None:
         max_steps = max(300, grid_size[0] * grid_size[1] // 2)
-    env = PoINavigationEnv(seed=seed, grid_size=grid_size, max_steps=max_steps)
+    rng = np.random.default_rng(seed)
     rewards, costs, steps_list, agreements = [], [], [], []
 
     for _ in range(n_episodes):
+        ep_seed = int(rng.integers(0, 2**31))
+        env = PoINavigationEnv(seed=ep_seed, grid_size=grid_size, max_steps=max_steps)
         obs, _ = env.reset()
+
+        baseline_idx = cost_optimal_baseline(
+            env._pois, env._init_agent1_pos, env._init_agent2_pos,
+            env._obstacles, DEFAULT_WEIGHTS, env.grid_size,
+        )
+
         ep_reward = 0.0
+        first_target_idx: int | None = None
         done = False
         while not done:
             action = predict_fn(obs)
             obs, reward, terminated, truncated, info = env.step(action)
             ep_reward += reward
+            if first_target_idx is None:
+                first_target_idx = info["target_idx"]
             done = terminated or truncated
         rewards.append(ep_reward)
         costs.append(info["cost"])
         steps_list.append(info["step"])
-
-        baseline_idx = cost_optimal_baseline(
-            env._pois, env._init_agent1_pos, env._init_agent2_pos,
-            env._obstacles, DEFAULT_WEIGHTS, env.grid_size
-        )
-        agreements.append(float(env._target_poi == env._pois[baseline_idx]))
+        agreements.append(float(first_target_idx == baseline_idx))
 
     cost_successes = [max(0.0, 1.0 - c) for c in costs]
     return {
@@ -296,12 +302,13 @@ def _discretize_nav(obs: np.ndarray) -> int:
     State = (best_poi, wall_a1, dir_a1→target, dist_a1, wall_a2, dir_a2→target, dist_a2)
     Total states: 3 × 16 × 8 × 3 × 16 × 8 × 3 = 442,368
     """
+    w = DEFAULT_WEIGHTS
     costs = [
-        obs[_COST_START + i * _COST_STRIDE] * 0.20
-        + obs[_COST_START + i * _COST_STRIDE + 1] * 0.35
-        + obs[_COST_START + i * _COST_STRIDE + 2] * 0.10
-        + obs[_COST_START + i * _COST_STRIDE + 3] * 0.10
-        + obs[_COST_START + i * _COST_STRIDE + 4] * 0.25
+        obs[_COST_START + i * _COST_STRIDE] * w[0]
+        + obs[_COST_START + i * _COST_STRIDE + 1] * w[1]
+        + obs[_COST_START + i * _COST_STRIDE + 2] * w[2]
+        + obs[_COST_START + i * _COST_STRIDE + 3] * w[3]
+        + obs[_COST_START + i * _COST_STRIDE + 4] * w[4]
         for i in range(3)
     ]
     best_poi = int(np.argmin(costs))
@@ -331,7 +338,7 @@ def _discretize_nav(obs: np.ndarray) -> int:
             + dist_a2)
 
 
-def _qlearning_worker(args: tuple) -> dict:
+def _qlearning_worker(args: tuple) -> tuple[dict, dict, float]:
     (q_table_dict, chunk_episodes, worker_seed,
      alpha, gamma, epsilon, epsilon_end, epsilon_decay, grid_size) = args
 
@@ -341,12 +348,14 @@ def _qlearning_worker(args: tuple) -> dict:
     env = PoINavigationEnv(seed=worker_seed, grid_size=grid_size, max_steps=max_steps)
     rng = np.random.default_rng(worker_seed)
     q_table = defaultdict(lambda: np.zeros(_NAV_ACTIONS, dtype=np.float32), q_table_dict)
+    visit_counts: dict[int, int] = defaultdict(int)
 
     for _ in range(chunk_episodes):
         obs, _ = env.reset()
         done = False
         while not done:
             s = _discretize_nav(obs)
+            visit_counts[s] += 1
             if rng.random() < epsilon:
                 action = int(rng.integers(0, _NAV_ACTIONS))
             else:
@@ -358,15 +367,22 @@ def _qlearning_worker(args: tuple) -> dict:
             obs = next_obs
         epsilon = max(epsilon_end, epsilon * epsilon_decay)
 
-    return dict(q_table)
+    return dict(q_table), dict(visit_counts), epsilon
 
 
-def _merge_qtables(tables: list[dict]) -> dict:
-    all_keys = set().union(*tables)
-    merged = {}
+def _merge_qtables(tables: list[dict], visit_counts_list: list[dict]) -> dict:
+    """Weighted average of Q-tables using visit counts per state."""
+    all_keys: set = set().union(*tables)
+    merged: dict = {}
     for k in all_keys:
-        arrays = [t[k] for t in tables if k in t]
-        merged[k] = np.mean(arrays, axis=0).astype(np.float32)
+        total_visits = 0
+        weighted_sum = np.zeros(_NAV_ACTIONS, dtype=np.float64)
+        for t, vc in zip(tables, visit_counts_list):
+            if k in t:
+                visits = max(vc.get(k, 1), 1)
+                total_visits += visits
+                weighted_sum += t[k].astype(np.float64) * visits
+        merged[k] = (weighted_sum / total_visits).astype(np.float32)
     return merged
 
 
@@ -428,8 +444,12 @@ def train_qlearning(
         with mp.Pool(processes=n_workers) as pool:
             results = pool.map(_qlearning_worker, worker_args)
 
-        q_table = _merge_qtables(results)
-        epsilon = max(epsilon_end, epsilon * (epsilon_decay ** chunk_size))
+        q_tables = [r[0] for r in results]
+        visit_counts_list = [r[1] for r in results]
+        worker_epsilons = [r[2] for r in results]
+
+        q_table = _merge_qtables(q_tables, visit_counts_list)
+        epsilon = float(np.mean(worker_epsilons))
         episodes_done_total = episodes_done + (chunk + 1) * chunk_size
 
         q_table_dd = defaultdict(lambda: np.zeros(_NAV_ACTIONS, dtype=np.float32), q_table)

@@ -17,33 +17,34 @@ The optimal POI minimizes a weighted cost over BFS path distances:
 
 $$\text{cost} = w_{TE_a} \cdot d_A + w_{TE_h} \cdot d_H + w_e \cdot e + w_p \cdot p + w_{TTM} \cdot ttm$$
 
-| Symbol | Formula | Description |
-|--------|---------|-------------|
-| $d_A$ | $\frac{\text{BFS}(\text{agent1}, \text{POI})}{D_{\max}}$ | Travel Effort (agent1 → POI), normalized |
-| $d_H$ | $\frac{\text{BFS}(\text{agent2}, \text{POI})}{D_{\max}}$ | Travel Effort (agent2 → POI), normalized |
-| $D_{\max}$ | $\text{rows} + \text{cols}$ | Max distance on grid |
-| $e$ | $0.2 + 0.6 \cdot d_H$ | Energy expenditure, range $[0.2, 0.8]$ |
-| $p$ | $1 - d_H$ | Privacy (higher when POI near agent2) |
-| $ttm$ | $\max(d_A, d_H)$ | Time-to-Meet |
+| Symbol | Formula | Range | Description |
+|--------|---------|-------|-------------|
+| $d_A$ | $\frac{\text{BFS}(\text{agent1}, \text{POI})}{D_{\max}}$ | $[0, 1]$ | Travel Effort — agent1 (robot) → POI |
+| $d_H$ | $\frac{\text{BFS}(\text{agent2}, \text{POI})}{D_{\max}}$ | $[0, 1]$ | Travel Effort — agent2 (human) → POI |
+| $D_{\max}$ | $\text{rows} + \text{cols}$ | — | Max distance on grid |
+| $e$ | $0.6 \cdot d_A + 0.4 \cdot d_H$ | $[0, 1]$ | Combined locomotion energy (robot weighs more: batteries) |
+| $p$ | $1 - d_H$ | $[0, 1]$ | Privacy — location-disclosure risk. POI near human → reveals their location → high cost |
+| $ttm$ | $\max(d_A, d_H)$ | $[0, 1]$ | Time-to-Meet |
 
-Default weights: $w_{TE_a} = 0.20,\ w_{TE_h} = 0.35,\ w_e = 0.10,\ w_p = 0.10,\ w_{TTM} = 0.25$
+Default weights: $w_{TE_a} = 0.15,\ w_{TE_h} = 0.25,\ w_e = 0.15,\ w_p = 0.15,\ w_{TTM} = 0.30$
 
-The highest weight is on $d_H$ (human travel effort), prioritising the human's comfort.
+The highest weight is on $ttm$ (time-to-meet), ensuring both agents arrive quickly. Privacy and energy have equal weight ($0.15$), so the policy avoids POIs that would reveal the human's location or drain the robot's battery.
 
 ## Reward
 
-Each step the agents receive a shared reward with four components:
+Each step the agents receive a shared reward with five components:
 
-$$r = \text{progress} - \text{step\_penalty} - \text{switch\_penalty} + \text{terminal\_bonus}$$
+$$r = \text{progress} - \text{step\_penalty} - \text{switch\_penalty} - \text{cost\_penalty} + \text{terminal\_bonus}$$
 
 | Component | Value | Description |
 |-----------|-------|-------------|
 | Progress | $\frac{\Delta d_1 + \Delta d_2}{2 \cdot D_{\max}} \times S$ | Reward for reducing BFS distance to target ($S = 2.0$) |
 | Step penalty | $\frac{B}{2 \cdot T_{\max}}$ | Per-step cost encouraging speed ($B = 5.0$, $T_{\max}$ = max steps) |
 | Switch penalty | $0.05 \times B$ | Penalty each time the target POI changes |
+| Cost penalty | $\text{cost} \times C$ | Weighted cost of current target ($C = 0.3$) — drives cost-aware POI selection |
 | Terminal bonus | $B$ | Bonus when both agents reach the target |
 
-The terminal bonus ($B = 5.0$) always outweighs the total accumulated step penalties, ensuring arrival is always rewarded.
+The cost penalty gives the agent a **direct reward signal** for choosing low-cost POIs (considering energy, privacy, and travel effort), not just the closest one. The terminal bonus ($B = 5.0$) always outweighs the total accumulated step penalties, ensuring arrival is always rewarded.
 
 ## Observation space
 
@@ -77,7 +78,7 @@ Three RL categories are compared on the same environment:
 
 | Category | Algorithm | Notes |
 |----------|-----------|-------|
-| **Tabular RL** | Q-Learning | Compact discrete state (442,368 states); parallel workers with Q-table merging |
+| **Tabular RL** | Q-Learning | Compact discrete state (442,368 states); parallel workers with visit-weighted Q-table merging |
 | **Deep Value-based RL** | DQN | Off-policy, replay buffer, ε-greedy; `Discrete(75)` via FlatActionWrapper |
 | **Policy Gradient (Actor-Critic)** | PPO | On-policy, 6 parallel envs via SubprocVecEnv; native `MultiDiscrete([3,5,5])` |
 
