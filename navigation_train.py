@@ -46,6 +46,7 @@ def _eval_navigation(
     n_episodes: int = 200,
     seed: int = 99,
     grid_size: tuple[int, int] = (64, 64),
+    max_steps: int | None = None,
 ) -> dict:
     """
     Evaluate a navigation policy.
@@ -53,8 +54,11 @@ def _eval_navigation(
     Returns dict with mean_reward, mean_cost, cost_success, mean_steps, agreement.
     cost_success = 1 - cost (clamped to [0,1]); higher = closer to cost-optimal.
     agreement = fraction of episodes where env target matches cost-optimal baseline.
+    max_steps must match the training env so reward scales are identical.
     """
-    env = PoINavigationEnv(seed=seed, grid_size=grid_size)
+    if max_steps is None:
+        max_steps = max(300, grid_size[0] * grid_size[1] // 2)
+    env = PoINavigationEnv(seed=seed, grid_size=grid_size, max_steps=max_steps)
     rewards, costs, steps_list, agreements = [], [], [], []
 
     for _ in range(n_episodes):
@@ -164,7 +168,7 @@ def train_ppo(
                 def predict(obs):
                     a, _ = self.model.predict(obs, deterministic=True)
                     return int(a)
-                stats = _eval_navigation(predict, n_episodes=100, grid_size=grid_size)
+                stats = _eval_navigation(predict, n_episodes=100, grid_size=grid_size, max_steps=max_steps)
                 reward_history.append(stats["mean_reward"])
                 cost_success_history.append(stats["cost_success"])
                 agreement_history.append(stats["agreement"])
@@ -182,7 +186,11 @@ def train_ppo(
                               "ppo", size_tag)
 
     save_path = save_dir / f"nav_ppo_{size_tag}"
-    n_steps = max(512, max_steps) // n_envs
+    # n_steps: rollout length per env before each PPO update.
+    # Need n_steps * n_envs >= batch_size (256) and enough steps to see full episodes.
+    # min 2 full episodes worth of steps per env, rounded to nearest 64 for efficiency.
+    steps_per_env = max(max_steps * 2, 512)
+    n_steps = (steps_per_env // n_envs // 64 + 1) * 64
     if save_path.with_suffix(".zip").exists():
         print(f"Resuming PPO from {save_path} (+{total_timesteps:,} steps)...")
         model = PPO.load(str(save_path), env=env)
@@ -201,7 +209,7 @@ def train_ppo(
     def predict(obs):
         a, _ = model.predict(obs, deterministic=True)
         return int(a)
-    stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size)
+    stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size, max_steps=max_steps)
     print(f"Final eval — cost_success: {stats['cost_success']:.1%}  reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
 
 
@@ -217,13 +225,21 @@ def train_dqn(
 ) -> None:
     from stable_baselines3 import DQN
     from stable_baselines3.common.callbacks import BaseCallback
+    from stable_baselines3.common.vec_env import SubprocVecEnv
 
     size_tag = str(grid_size[0])
     save_dir = MODEL_DIR / "dqn"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     max_steps = max(300, grid_size[0] * grid_size[1] // 2)
-    env = PoINavigationEnv(seed=seed, grid_size=grid_size, max_steps=max_steps)
+
+    n_envs = 6
+    def _make_env(env_seed: int):
+        def _init():
+            return PoINavigationEnv(seed=env_seed, grid_size=grid_size, max_steps=max_steps)
+        return _init
+
+    env = SubprocVecEnv([_make_env(seed + i) for i in range(n_envs)])
 
     # Load existing history (continues x-axis from where we left off)
     hist = _load_history("dqn", size_tag)
@@ -238,7 +254,7 @@ def train_dqn(
                 def predict(obs):
                     a, _ = self.model.predict(obs, deterministic=True)
                     return int(a)
-                stats = _eval_navigation(predict, n_episodes=100, grid_size=grid_size)
+                stats = _eval_navigation(predict, n_episodes=100, grid_size=grid_size, max_steps=max_steps)
                 reward_history.append(stats["mean_reward"])
                 cost_success_history.append(stats["cost_success"])
                 agreement_history.append(stats["agreement"])
@@ -262,7 +278,7 @@ def train_dqn(
         reset_num_timesteps = False
     else:
         model = DQN("MlpPolicy", env, learning_rate=1e-4, buffer_size=100_000,
-                    learning_starts=1000, batch_size=128, gamma=0.99,
+                    learning_starts=n_envs * 200, batch_size=128, gamma=0.99,
                     exploration_fraction=0.3, exploration_final_eps=0.05,
                     verbose=1, seed=seed)
         reset_num_timesteps = True
@@ -275,7 +291,7 @@ def train_dqn(
     def predict(obs):
         a, _ = model.predict(obs, deterministic=True)
         return int(a)
-    stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size)
+    stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size, max_steps=max_steps)
     print(f"Final eval — cost_success: {stats['cost_success']:.1%}  reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
 
 
@@ -328,10 +344,59 @@ def _discretize_nav(obs: np.ndarray) -> int:
     return best_poi * (16 * 8 * 3) + wall_bits * (8 * 3) + angle * 3 + dist_bucket
 
 
+def _qlearning_worker(args: tuple) -> dict:
+    """
+    Top-level worker for multiprocessing — runs a chunk of Q-Learning episodes.
+    Each worker starts from the same Q-table and explores independently.
+    Returns the updated Q-table dict after running chunk_episodes episodes.
+    """
+    (q_table_dict, chunk_episodes, worker_seed,
+     alpha, gamma, epsilon, epsilon_end, epsilon_decay, grid_size) = args
+
+    from collections import defaultdict
+
+    max_steps = max(300, grid_size[0] * grid_size[1] // 2)
+    env = PoINavigationEnv(seed=worker_seed, grid_size=grid_size, max_steps=max_steps)
+    rng = np.random.default_rng(worker_seed)
+    q_table = defaultdict(lambda: np.zeros(_NAV_ACTIONS, dtype=np.float32), q_table_dict)
+
+    for _ in range(chunk_episodes):
+        obs, _ = env.reset()
+        done = False
+        while not done:
+            s = _discretize_nav(obs)
+            if rng.random() < epsilon:
+                action = int(rng.integers(0, _NAV_ACTIONS))
+            else:
+                action = int(np.argmax(q_table[s]))
+            next_obs, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+            ns = _discretize_nav(next_obs)
+            q_table[s][action] += alpha * (reward + gamma * np.max(q_table[ns]) - q_table[s][action])
+            obs = next_obs
+        epsilon = max(epsilon_end, epsilon * epsilon_decay)
+
+    return dict(q_table)
+
+
+def _merge_qtables(tables: list[dict]) -> dict:
+    """
+    Merge Q-tables from parallel workers by element-wise averaging.
+    States visited by only some workers are averaged over those workers only.
+    """
+    all_keys = set().union(*tables)
+    merged = {}
+    for k in all_keys:
+        arrays = [t[k] for t in tables if k in t]
+        merged[k] = np.mean(arrays, axis=0).astype(np.float32)
+    return merged
+
+
 def train_qlearning(
     total_episodes: int = 200_000,
     seed: int = 42,
-    eval_freq: int = 20_000,
+    eval_freq: int = 10_000,
+    n_workers: int = 6,
     alpha: float = 0.2,
     gamma: float = 0.99,
     epsilon_start: float = 1.0,
@@ -339,18 +404,21 @@ def train_qlearning(
     epsilon_decay: float = 0.99997,
     grid_size: tuple[int, int] = (64, 64),
 ) -> None:
+    """
+    Parallel Q-Learning: each eval_freq chunk is split across n_workers processes
+    that explore independently, then Q-tables are merged by element-wise averaging.
+    Effective episodes = total_episodes; wall-clock time ≈ total_episodes / n_workers.
+    """
+    import multiprocessing as mp
+    from collections import defaultdict
+
     size_tag = str(grid_size[0])
     save_dir = MODEL_DIR / "qlearning"
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    from collections import defaultdict
-
     max_steps = max(300, grid_size[0] * grid_size[1] // 2)
-    env = PoINavigationEnv(seed=seed, grid_size=grid_size, max_steps=max_steps)
-    rng = np.random.default_rng(seed)
     model_path = save_dir / f"nav_qtable_{size_tag}.pkl"
 
-    # Resume from saved Q-table + epsilon if they exist
     hist = _load_history("qlearning", size_tag)
     step_history: list = hist["steps"]
     reward_history: list = hist["rewards"]
@@ -359,61 +427,56 @@ def train_qlearning(
 
     if model_path.exists():
         with open(model_path, "rb") as f:
-            q_table: dict[int, np.ndarray] = defaultdict(
-                lambda: np.zeros(_NAV_ACTIONS, dtype=np.float32), pickle.load(f)
-            )
+            q_table: dict = dict(pickle.load(f))
         epsilon = float(hist.get("epsilon", epsilon_end))
         episodes_done = int(hist.get("episodes_done", 0))
         print(f"Resuming Q-Learning from {model_path} "
               f"(+{total_episodes:,} episodes, ε={epsilon:.4f})...")
     else:
-        q_table = defaultdict(lambda: np.zeros(_NAV_ACTIONS, dtype=np.float32))
+        q_table = {}
         epsilon = epsilon_start
         episodes_done = 0
 
-    print(f"Training Q-Learning (navigation, {size_tag}x{size_tag}) for {total_episodes} episodes...")
+    n_chunks = max(1, total_episodes // eval_freq)
+    chunk_size = total_episodes // n_chunks
+    print(f"Training Q-Learning ({size_tag}×{size_tag}) — "
+          f"{total_episodes:,} episodes in {n_chunks} chunks × {n_workers} workers...")
 
-    for episode in range(total_episodes):
-        obs, _ = env.reset()
-        ep_reward = 0.0
-        done = False
+    for chunk in range(n_chunks):
+        episodes_per_worker = max(1, chunk_size // n_workers)
 
-        while not done:
-            s = _discretize_nav(obs)
+        worker_args = [
+            (q_table, episodes_per_worker, seed + chunk * n_workers + w,
+             alpha, gamma, epsilon, epsilon_end, epsilon_decay, grid_size)
+            for w in range(n_workers)
+        ]
 
-            if rng.random() < epsilon:
-                action = int(rng.integers(0, _NAV_ACTIONS))
-            else:
-                action = int(np.argmax(q_table[s]))
+        with mp.Pool(processes=n_workers) as pool:
+            results = pool.map(_qlearning_worker, worker_args)
 
-            next_obs, reward, terminated, truncated, _ = env.step(action)
-            done = terminated or truncated
-            ep_reward += reward
+        q_table = _merge_qtables(results)
 
-            ns = _discretize_nav(next_obs)
-            q_table[s][action] += alpha * (reward + gamma * np.max(q_table[ns]) - q_table[s][action])
+        # Advance epsilon as if chunk_size episodes ran sequentially
+        epsilon = max(epsilon_end, epsilon * (epsilon_decay ** chunk_size))
 
-            obs = next_obs
+        episodes_done_total = episodes_done + (chunk + 1) * chunk_size
 
-        epsilon = max(epsilon_end, epsilon * epsilon_decay)
-
-        if (episode + 1) % eval_freq == 0:
-            def predict(obs):
-                return int(np.argmax(q_table[_discretize_nav(obs)]))
-            stats = _eval_navigation(predict, n_episodes=100, grid_size=grid_size)
-            reward_history.append(stats["mean_reward"])
-            cost_success_history.append(stats["cost_success"])
-            agreement_history.append(stats["agreement"])
-            # x-axis: absolute episode number across all runs
-            step_history.append(episodes_done + episode + 1)
-            print(
-                f"  Episode {episodes_done + episode + 1:>8}: reward={stats['mean_reward']:.3f}"
-                f"  cost_success={stats['cost_success']:.1%}"
-                f"  ε={epsilon:.4f}"
-            )
+        q_table_dd = defaultdict(lambda: np.zeros(_NAV_ACTIONS, dtype=np.float32), q_table)
+        def predict(obs, _qt=q_table_dd):
+            return int(np.argmax(_qt[_discretize_nav(obs)]))
+        stats = _eval_navigation(predict, n_episodes=100, grid_size=grid_size, max_steps=max_steps)
+        reward_history.append(stats["mean_reward"])
+        cost_success_history.append(stats["cost_success"])
+        agreement_history.append(stats["agreement"])
+        step_history.append(episodes_done_total)
+        print(
+            f"  Episode {episodes_done_total:>8}: reward={stats['mean_reward']:.3f}"
+            f"  cost_success={stats['cost_success']:.1%}"
+            f"  ε={epsilon:.4f}"
+        )
 
     with open(model_path, "wb") as f:
-        pickle.dump(dict(q_table), f)
+        pickle.dump(q_table, f)
     print(f"Saved Q-table to {model_path}")
 
     _save_history(step_history, reward_history, cost_success_history, agreement_history,
@@ -421,9 +484,10 @@ def train_qlearning(
                   epsilon=epsilon,
                   episodes_done=episodes_done + total_episodes)
 
-    def predict(obs):
-        return int(np.argmax(q_table[_discretize_nav(obs)]))
-    stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size)
+    q_table_dd = defaultdict(lambda: np.zeros(_NAV_ACTIONS, dtype=np.float32), q_table)
+    def predict(obs, _qt=q_table_dd):
+        return int(np.argmax(_qt[_discretize_nav(obs)]))
+    stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size, max_steps=max_steps)
     print(f"Final eval — cost_success: {stats['cost_success']:.1%}  reward: {stats['mean_reward']:.3f}  agreement: {stats['agreement']:.1%}")
 
 
@@ -438,6 +502,7 @@ def main():
                         help="Grid size (8, 32, or 64)")
     parser.add_argument("--steps", type=int, default=200_000, help="Timesteps (ppo/dqn)")
     parser.add_argument("--episodes", type=int, default=200_000, help="Episodes (qlearning)")
+    parser.add_argument("--workers", type=int, default=6, help="Parallel workers (qlearning)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no-train", action="store_true")
     args = parser.parse_args()
@@ -460,7 +525,8 @@ def main():
             with open(model_path, "rb") as f:
                 q_table = pickle.load(f)
             predict = lambda obs: int(np.argmax(q_table.get(_discretize_nav(obs), np.zeros(_NAV_ACTIONS))))
-        stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size)
+        eval_max_steps = max(300, grid_size[0] * grid_size[1] // 2)
+        stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size, max_steps=eval_max_steps)
         print(f"Cost success: {stats['cost_success']:.1%}  Reward: {stats['mean_reward']:.3f}  Steps: {stats['mean_steps']:.1f}  Agreement: {stats['agreement']:.1%}")
         return
 
@@ -470,7 +536,8 @@ def main():
     elif args.algo == "dqn":
         train_dqn(total_timesteps=args.steps, seed=args.seed, grid_size=grid_size)
     else:
-        train_qlearning(total_episodes=args.episodes, seed=args.seed, grid_size=grid_size)
+        train_qlearning(total_episodes=args.episodes, seed=args.seed, grid_size=grid_size,
+                        n_workers=args.workers)
 
 
 if __name__ == "__main__":

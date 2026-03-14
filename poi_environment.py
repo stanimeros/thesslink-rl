@@ -19,12 +19,15 @@ Action: Discrete(75) — joint (target_idx, move1, move2)
     Encoding:  action = target_idx * 25 + move1 * 5 + move2
 
 Reward: shared
-    -cost            — distance-based cost for the chosen target POI
-    -0.01            — step penalty (discourages stalling)
-    -0.10            — target-switch penalty (allows rerouting but filters noise;
-                        only applies when target_idx changes from previous step)
-    +5.00            — terminal bonus when both agents reach the target
+    +progress        — reward for each step that reduces total BFS distance to target
+                        progress = (prev_dist1 + prev_dist2 - dist1 - dist2) / (2 * max_dist) * PROGRESS_SCALE
+    -STEP_PENALTY    — per-step penalty = TERMINAL_BONUS / (2 * max_steps)
+                        guarantees: total_step_penalty < TERMINAL_BONUS always
+    -SWITCH_PENALTY  — target-switch penalty = TERMINAL_BONUS * 0.02 per switch
+    +TERMINAL_BONUS  — bonus (5.0) when both agents reach the target
 Episode ends when both agents reach chosen target or max_steps exceeded.
+The cost components in the observation allow the model to learn which POI
+has the lowest cost and navigate there.
 """
 from __future__ import annotations
 
@@ -142,6 +145,9 @@ class PoINavigationEnv(gym.Env):
         max_steps: int = 200,
         weights: tuple[float, ...] | None = None,
         seed: int | None = None,
+        terminal_bonus: float = 5.0,
+        switch_penalty_frac: float = 0.02,
+        progress_scale: float = 2.0,
     ):
         super().__init__()
         self.grid_size = grid_size
@@ -149,6 +155,14 @@ class PoINavigationEnv(gym.Env):
         self.obstacle_density = obstacle_density
         self.max_steps = max_steps
         self.weights = DEFAULT_WEIGHTS if weights is None else weights
+
+        # Reward constants — scaled so total_step_penalty < terminal_bonus always:
+        #   STEP_PENALTY = terminal_bonus / (2 * max_steps)
+        #   → max total step penalty = terminal_bonus / 2  (always < terminal_bonus)
+        self.TERMINAL_BONUS = terminal_bonus
+        self.STEP_PENALTY = terminal_bonus / (2.0 * max_steps)
+        self.SWITCH_PENALTY = terminal_bonus * switch_penalty_frac
+        self.PROGRESS_SCALE = progress_scale
 
         # Global observation: agent1_pos(2) + agent2_pos(2) + wall_bits×2(8)
         #                     + poi_positions(6) + cost_components×3_POIs(15) = 33
@@ -300,11 +314,18 @@ class PoINavigationEnv(gym.Env):
         move2 = a % 5
 
         # Apply switch penalty before updating target
-        switch_penalty = 0.1 if (self._prev_target_idx != -1 and target_idx != self._prev_target_idx) else 0.0
+        switch_penalty = self.SWITCH_PENALTY if (self._prev_target_idx != -1 and target_idx != self._prev_target_idx) else 0.0
 
         self._prev_target_idx = target_idx
         self._target_idx = target_idx
         self._target_poi = self._pois[target_idx]
+
+        max_dist = float(self.rows + self.cols)
+        target_map = self._poi_dist_maps[target_idx]
+
+        # Record distances before moving (for progress shaping)
+        prev_dist1 = min(target_map.get(self._agent1_pos, float("inf")), max_dist)
+        prev_dist2 = min(target_map.get(self._agent2_pos, float("inf")), max_dist)
 
         # Once an agent reaches the target it waits there for the other agent.
         if self._agent1_pos != self._target_poi:
@@ -313,13 +334,11 @@ class PoINavigationEnv(gym.Env):
             self._agent2_pos = self._try_move(self._agent2_pos, move2)
         self._step_count += 1
 
-        # BFS distance to chosen target for each agent
-        max_dist = float(self.rows + self.cols)
-        target_map = self._poi_dist_maps[target_idx]
+        # BFS distance to chosen target after moving
         dist1 = min(target_map.get(self._agent1_pos, float("inf")), max_dist)
         dist2 = min(target_map.get(self._agent2_pos, float("inf")), max_dist)
 
-        # Cost-based reward for chosen target
+        # Cost for the observation info (still computed for evaluation)
         te_a = dist1 / max_dist
         te_h = dist2 / max_dist
         energy = 0.2 + 0.6 * te_h
@@ -327,10 +346,14 @@ class PoINavigationEnv(gym.Env):
         ttm = max(te_a, te_h)
         cost = sum(w * v for w, v in zip(self.weights, (te_a, te_h, energy, privacy, ttm)))
 
-        both_arrived = (self._agent1_pos == self._target_poi and self._agent2_pos == self._target_poi)
-        terminal_bonus = 5.0 if both_arrived else 0.0
+        # Progress reward: positive when agents move closer to target this step
+        progress = (prev_dist1 + prev_dist2 - dist1 - dist2) / (2.0 * max_dist)
+        progress_reward = progress * self.PROGRESS_SCALE
 
-        reward = -cost - 0.01 - switch_penalty + terminal_bonus
+        both_arrived = (self._agent1_pos == self._target_poi and self._agent2_pos == self._target_poi)
+        terminal_bonus = self.TERMINAL_BONUS if both_arrived else 0.0
+
+        reward = progress_reward - self.STEP_PENALTY - switch_penalty + terminal_bonus
         reward = float(np.clip(reward, -10.0, 10.0))
 
         terminated = both_arrived
