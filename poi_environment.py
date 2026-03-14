@@ -97,13 +97,13 @@ def _build_global_obs(
 
     # Relative vectors: agent → each POI, normalized to [-1, 1]
     deltas_a1 = np.array(
-        [(poi[0] - agent1_pos[0]) / scale_r for poi in pois for _ in ''].__class__(
-            (v for poi in pois for v in ((poi[0] - agent1_pos[0]) / scale_r, (poi[1] - agent1_pos[1]) / scale_c))
-        ),
+        [v for poi in pois for v in ((poi[0] - agent1_pos[0]) / scale_r,
+                                     (poi[1] - agent1_pos[1]) / scale_c)],
         dtype=np.float32,
     )
     deltas_a2 = np.array(
-        list(v for poi in pois for v in ((poi[0] - agent2_pos[0]) / scale_r, (poi[1] - agent2_pos[1]) / scale_c)),
+        [v for poi in pois for v in ((poi[0] - agent2_pos[0]) / scale_r,
+                                     (poi[1] - agent2_pos[1]) / scale_c)],
         dtype=np.float32,
     )
 
