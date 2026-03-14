@@ -11,11 +11,13 @@ POI colours:
   Cyan   — POI where model and baseline agree
 
 Usage:
-  python demo.py                          # 5 scenarios, 64x64 grid
-  python demo.py --grid-size 8            # 8x8 grid
+  python demo.py                          # 5 scenarios, 8x8 grid
   python demo.py --grid-size 32           # 32x32 grid
+  python demo.py --grid-size 64           # 64x64 grid
   python demo.py --scenarios 10
   python demo.py --scenarios 0            # Infinite until window closed
+  python demo.py --pause 8               # 8s pause between scenarios
+  python demo.py --timeout 15            # 15s wall-clock timeout per scenario
 """
 from __future__ import annotations
 
@@ -40,6 +42,10 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--scenarios", type=int, default=5, help="Scenarios to run (0=infinite until window closed)")
 parser.add_argument("--grid-size", type=int, choices=[8, 32, 64], default=8,
                     help="Grid size to use (8, 32, or 64). Loads the corresponding trained models.")
+parser.add_argument("--pause", type=float, default=5.0,
+                    help="Seconds to pause between scenarios (default: 5)")
+parser.add_argument("--timeout", type=float, default=30.0,
+                    help="Max wall-clock seconds per scenario before forcing next (default: 30)")
 args = parser.parse_args()
 
 # ---------------------------------------------------------------------------
@@ -276,7 +282,7 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
     # optimal_idxs[i] = cost-optimal POI index for panel i (updated each scenario reset)
     optimal_idxs: list[int] = [0] * N_PANELS
 
-    def render_frame(badge_fns: list[Callable]) -> None:
+    def render_frame(badge_fns: list[Callable], overlay_lines: list[str] | None = None) -> None:
         viewer.window.switch_to()
         viewer.window.dispatch_events()
         glClearColor(1, 1, 1, 1)
@@ -298,6 +304,23 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
                 anchor_y="center",
                 color=(30, 30, 30, 255),
             ).draw()
+        if overlay_lines:
+            n = len(overlay_lines)
+            for j, line in enumerate(overlay_lines):
+                y_pos = panel_h // 2 + (n // 2 - j) * 24
+                for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    pyglet.text.Label(
+                        line, font_size=14, bold=True,
+                        x=win_w // 2 + dx, y=y_pos + dy,
+                        anchor_x="center", anchor_y="center",
+                        color=(255, 255, 255, 255),
+                    ).draw()
+                pyglet.text.Label(
+                    line, font_size=14, bold=True,
+                    x=win_w // 2, y=y_pos,
+                    anchor_x="center", anchor_y="center",
+                    color=(30, 30, 30, 255),
+                ).draw()
         viewer.window.flip()
 
     scenario = 0
@@ -334,11 +357,18 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
         time.sleep(1)
 
         done_flags = [False] * N_PANELS
+        scenario_start = time.time()
+        timed_out = False
         while not all(done_flags):
             if not viewer.isopen:
                 for e, _ in lbf_envs_raw:
                     e.close()
                 return
+
+            if args.timeout > 0 and time.time() - scenario_start > args.timeout:
+                timed_out = True
+                print(f"  Wall-clock timeout ({args.timeout}s) reached — skipping to next scenario.")
+                break
 
             for i, (nav_env, policy) in enumerate(zip(nav_envs, policies)):
                 if done_flags[i]:
@@ -358,16 +388,22 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
             f"{PANEL_TITLES[i]}: {'arrived' if nav_envs[i]._agent1_pos == nav_envs[i]._target_poi and nav_envs[i]._agent2_pos == nav_envs[i]._target_poi else 'timeout'} ({nav_envs[i]._step_count} steps)"
             for i in range(N_PANELS)
         ]
+        if timed_out:
+            results.append("(wall-clock timeout)")
         print("  " + "  |  ".join(results))
 
-        # Hold 5 seconds before next scenario
-        end_time = time.time() + 5.0
+        end_time = time.time() + args.pause
         while time.time() < end_time:
             if not viewer.isopen:
                 for e, _ in lbf_envs_raw:
                     e.close()
                 return
-            render_frame(badge_fns)
+            remaining = int(end_time - time.time()) + 1
+            overlay = [
+                f"Scenario {scenario} complete" + (" (timeout)" if timed_out else ""),
+                f"Next scenario in {remaining}s...",
+            ]
+            render_frame(badge_fns, overlay)
             time.sleep(0.1)
 
     for e, _ in lbf_envs_raw:
