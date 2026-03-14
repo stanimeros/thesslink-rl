@@ -234,8 +234,8 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
     panel_offsets = [(i * panel_w, 0) for i in range(N_PANELS)]
 
     # One PoINavigationEnv per panel (same scenario, independent step state)
-    # Use a generous max_steps so agents have enough time to navigate
-    max_steps = max(200, rows * cols)
+    # max_steps must match training so the observation/reward scale is identical
+    max_steps = max(300, rows * cols // 2)
     nav_envs = [PoINavigationEnv(seed=42, grid_size=grid_size, max_steps=max_steps) for _ in range(N_PANELS)]
 
     # Three lbforaging envs for rendering (share one Pyglet window)

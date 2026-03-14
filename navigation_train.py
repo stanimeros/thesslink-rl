@@ -314,8 +314,8 @@ _COST_STRIDE = 5  # floats per POI
 def _discretize_nav(obs: np.ndarray) -> int:
     """
     Compact discrete state for tabular Q-Learning.
-    State = (best_poi_idx, wall_bits_a1, dir_to_target, dist_bucket)
-    Total states: 3 × 16 × 8 × 3 = 1,152 — tractable for tabular RL.
+    State = (best_poi_idx, wall_bits_a1, dir_a1_to_target, dist_a1, dir_a2_to_target, dist_a2)
+    Total states: 3 × 16 × 8 × 3 × 8 × 3 = 27,648 — still tractable for tabular RL.
     """
     # Best POI: index of POI with lowest weighted cost sum
     costs = [
@@ -331,17 +331,34 @@ def _discretize_nav(obs: np.ndarray) -> int:
     # Wall bits a1: 4 binary bits → integer 0-15
     wall_bits = int(obs[4]) * 8 + int(obs[5]) * 4 + int(obs[6]) * 2 + int(obs[7])  # 0-15
 
-    # Direction: encode agent1 position as 8 octants relative to grid center
-    sr, sc = float(obs[0]), float(obs[1])
-    dr = sr - 0.5
-    dc = sc - 0.5
-    angle = int((np.arctan2(dc, dr) + np.pi) / (np.pi / 4)) % 8  # 0-7
+    # POI position for the best target
+    poi_r = float(obs[12 + best_poi * 2])
+    poi_c = float(obs[13 + best_poi * 2])
 
-    # Distance bucket to best POI (te_a of best POI → 3 buckets)
-    te_a_best = float(obs[_COST_START + best_poi * _COST_STRIDE])
-    dist_bucket = 0 if te_a_best < 0.25 else (1 if te_a_best < 0.55 else 2)  # 0-2
+    # Direction from agent1 to best POI (8 octants)
+    a1_r, a1_c = float(obs[0]), float(obs[1])
+    dr1, dc1 = poi_r - a1_r, poi_c - a1_c
+    angle_a1 = int((np.arctan2(dc1, dr1) + np.pi) / (np.pi / 4)) % 8 if (abs(dr1) + abs(dc1)) > 1e-6 else 0
 
-    return best_poi * (16 * 8 * 3) + wall_bits * (8 * 3) + angle * 3 + dist_bucket
+    # Distance bucket agent1→best POI
+    te_a = float(obs[_COST_START + best_poi * _COST_STRIDE])
+    dist_a1 = 0 if te_a < 0.15 else (1 if te_a < 0.45 else 2)  # 0-2
+
+    # Direction from agent2 to best POI (8 octants)
+    a2_r, a2_c = float(obs[2]), float(obs[3])
+    dr2, dc2 = poi_r - a2_r, poi_c - a2_c
+    angle_a2 = int((np.arctan2(dc2, dr2) + np.pi) / (np.pi / 4)) % 8 if (abs(dr2) + abs(dc2)) > 1e-6 else 0
+
+    # Distance bucket agent2→best POI
+    te_h = float(obs[_COST_START + best_poi * _COST_STRIDE + 1])
+    dist_a2 = 0 if te_h < 0.15 else (1 if te_h < 0.45 else 2)  # 0-2
+
+    return (best_poi * (16 * 8 * 3 * 8 * 3)
+            + wall_bits * (8 * 3 * 8 * 3)
+            + angle_a1 * (3 * 8 * 3)
+            + dist_a1 * (8 * 3)
+            + angle_a2 * 3
+            + dist_a2)
 
 
 def _qlearning_worker(args: tuple) -> dict:
