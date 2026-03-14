@@ -3,7 +3,8 @@
 Train cooperative navigation with PoINavigationEnv (centralized controller).
 
 A single model sees 35-float relative observations and outputs a joint action
-(MultiDiscrete for PPO, Discrete(75) via FlatActionWrapper for DQN/Q-Learning).
+(MultiDiscrete([5,5]) for PPO, Discrete(25) via FlatActionWrapper for DQN/Q-Learning).
+Agents only control movement; the reward function guides them to the cost-optimal POI.
 
   Tabular RL       : Q-Learning  (--algo qlearning)
   Deep Value-based : DQN         (--algo dqn)
@@ -73,18 +74,16 @@ def _eval_navigation(
         )
 
         ep_reward = 0.0
-        first_target_idx: int | None = None
         done = False
         while not done:
             action = predict_fn(obs)
             obs, reward, terminated, truncated, info = env.step(action)
             ep_reward += reward
-            if first_target_idx is None:
-                first_target_idx = info["target_idx"]
             done = terminated or truncated
         rewards.append(ep_reward)
         steps_list.append(info["step"])
-        agreements.append(float(first_target_idx == baseline_idx))
+        arrived_idx = info.get("arrived_poi_idx")
+        agreements.append(float(arrived_idx is not None and arrived_idx == baseline_idx))
 
     return {
         "mean_reward": float(np.mean(rewards)),
@@ -120,7 +119,7 @@ def _save_history(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PPO — uses native MultiDiscrete([3, 5, 5])
+# PPO — uses native MultiDiscrete([5, 5])
 # ─────────────────────────────────────────────────────────────────────────────
 
 def train_ppo(
@@ -197,7 +196,7 @@ def train_ppo(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DQN — uses FlatActionWrapper → Discrete(75)
+# DQN — uses FlatActionWrapper → Discrete(25)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def train_dqn(
@@ -273,10 +272,10 @@ def train_dqn(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Q-Learning (Tabular RL) — uses flat Discrete(75) actions
+# Q-Learning (Tabular RL) — uses flat Discrete(25) actions
 # ─────────────────────────────────────────────────────────────────────────────
 
-_NAV_ACTIONS = 75
+_NAV_ACTIONS = 25
 
 # Observation layout (35 floats — relative):
 #   [0:6]   delta_a1_to_pois (dr,dc × 3 POIs)

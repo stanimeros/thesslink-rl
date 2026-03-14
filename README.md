@@ -6,10 +6,10 @@
 
 ## Overview
 
-- **Architecture:** Centralized "god-camera" controller — a single policy observes both agents and outputs a joint action
+- **Architecture:** Centralized "god-camera" controller — a single policy observes both agents and outputs a joint movement action
 - **Environment:** Grid with ~10% static obstacles (connectivity guaranteed), supports 8×8, 32×32, 64×64
-- **Goal:** Both agents navigate to the same target POI (out of 3 candidates)
-- **Target POI:** The policy selects which POI to navigate to each step, guided by the cost function
+- **Goal:** Both agents navigate to the same POI (out of 3 candidates)
+- **Target POI:** No explicit target selection — the reward function guides agents toward the cost-optimal POI via progress reward + cost-scaled terminal bonus
 
 ## Cost function
 
@@ -32,19 +32,17 @@ The highest weight is on $ttm$ (time-to-meet), ensuring both agents arrive quick
 
 ## Reward
 
-Each step the agents receive a shared reward with five components:
+Each step the agents receive a shared reward with three components:
 
-$$r = \text{progress} - \text{step\_penalty} - \text{switch\_penalty} - \text{cost\_penalty} + \text{terminal\_bonus}$$
+$$r = \text{progress} - \text{step\_penalty} + \text{terminal\_bonus}$$
 
 | Component | Value | Description |
 |-----------|-------|-------------|
-| Progress | $\frac{\Delta d_1 + \Delta d_2}{2 \cdot D_{\max}} \times S$ | Reward for reducing BFS distance to target ($S = 2.0$) |
-| Step penalty | $\frac{B}{2 \cdot T_{\max}}$ | Per-step cost encouraging speed ($B = 5.0$, $T_{\max}$ = max steps) |
-| Switch penalty | $0.05 \times B$ | Penalty each time the target POI changes |
-| Cost penalty | $\text{cost} \times C$ | Weighted cost of current target ($C = 0.3$) — drives cost-aware POI selection |
-| Terminal bonus | $B$ | Bonus when both agents reach the target |
+| Progress | $\max\!\bigl(0,\;\frac{\Delta d_1 + \Delta d_2}{2 \cdot D_{\max}}\bigr) \times S$ | Reward for reducing BFS distance to the **cost-optimal** POI ($S = 2.0$). Only positive progress counts — no reward for moving away. |
+| Step penalty | $\frac{B}{T_{\max}}$ | Per-step cost encouraging speed ($B = 5.0$, $T_{\max}$ = max steps) |
+| Terminal bonus | $B \times (1 + 2 \cdot (1 - \text{cost}))$ | Cost-scaled bonus when both agents meet at **any** POI. Cheaper POI → bigger bonus ($5\text{–}15$). |
 
-The cost penalty gives the agent a **direct reward signal** for choosing low-cost POIs (considering energy, privacy, and travel effort), not just the closest one. The terminal bonus ($B = 5.0$) always outweighs the total accumulated step penalties, ensuring arrival is always rewarded.
+The progress reward only measures distance to the cost-optimal POI, giving the agents a **directional signal** toward the best destination. The terminal bonus provides a **3× reward gap** between the cheapest and most expensive POI, so reaching the optimal one is strongly reinforced.
 
 ## Observation space
 
@@ -62,15 +60,16 @@ Relative vectors make the policy position-invariant: it sees "POI is 3 cells nor
 
 ## Action space
 
-`MultiDiscrete([3, 5, 5])` — joint action controlling both agents:
+`MultiDiscrete([5, 5])` — joint movement action controlling both agents:
 
 | Index | Range | Description |
 |-------|-------|-------------|
-| 0 | {0, 1, 2} | Target POI index |
-| 1 | {0, 1, 2, 3, 4} | Agent1 movement (NONE, N, S, W, E) |
-| 2 | {0, 1, 2, 3, 4} | Agent2 movement (NONE, N, S, W, E) |
+| 0 | {0, 1, 2, 3, 4} | Agent1 movement (NONE, N, S, W, E) |
+| 1 | {0, 1, 2, 3, 4} | Agent2 movement (NONE, N, S, W, E) |
 
-DQN and Q-Learning use a `FlatActionWrapper` that maps `Discrete(75)` to the equivalent MultiDiscrete encoding: `flat = target × 25 + move1 × 5 + move2`.
+No explicit target selection — the policy learns which POI to navigate to from the observation (cost components + relative vectors) and the reward signal.
+
+DQN and Q-Learning use a `FlatActionWrapper` that maps `Discrete(25)` to the equivalent MultiDiscrete encoding: `flat = move1 × 5 + move2`.
 
 ## Algorithms
 
@@ -79,8 +78,8 @@ Three RL categories are compared on the same environment:
 | Category | Algorithm | Notes |
 |----------|-----------|-------|
 | **Tabular RL** | Q-Learning | Compact discrete state (442,368 states); parallel workers with visit-weighted Q-table merging |
-| **Deep Value-based RL** | DQN | Off-policy, replay buffer, ε-greedy; `Discrete(75)` via FlatActionWrapper |
-| **Policy Gradient (Actor-Critic)** | PPO | On-policy, 6 parallel envs via SubprocVecEnv; native `MultiDiscrete([3,5,5])` |
+| **Deep Value-based RL** | DQN | Off-policy, replay buffer, ε-greedy; `Discrete(25)` via FlatActionWrapper |
+| **Policy Gradient (Actor-Critic)** | PPO | On-policy, 6 parallel envs via SubprocVecEnv; native `MultiDiscrete([5,5])` |
 
 ## Setup
 
@@ -126,9 +125,9 @@ POI colour coding per panel:
 
 | Colour | Meaning |
 |--------|---------|
-| Green | POI chosen by the model (model's target) |
-| Blue | POI chosen by the cost-optimal baseline |
-| Cyan | Model and baseline agree on this POI |
+| Green | POI where both agents arrived (non-optimal) |
+| Blue | Cost-optimal baseline POI |
+| Cyan | Both agents arrived at the cost-optimal POI |
 | Grey | Other POIs |
 | Dark | Obstacles |
 | Blue label **1** | agent1 |
@@ -139,7 +138,7 @@ POI colour coding per panel:
 ```
 thesslink-rl/
 ├── cost_function.py        # bfs_distance, cost_components, cost_optimal_baseline
-├── poi_environment.py      # PoINavigationEnv (35-float obs, MultiDiscrete, FlatActionWrapper)
+├── poi_environment.py      # PoINavigationEnv (35-float obs, MultiDiscrete([5,5]), FlatActionWrapper)
 ├── navigation_train.py     # Training: PPO, DQN (SubprocVecEnv), Q-Learning (parallel workers)
 ├── demo.py                 # 3-panel navigation demo
 ├── training.ipynb          # Interactive training notebook

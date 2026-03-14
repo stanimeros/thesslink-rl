@@ -2,26 +2,26 @@
 Cooperative multi-agent navigation environment for ThessLink RL.
 
 Centralized controller design: a single "god-camera" model sees the full
-global state and outputs a joint action that controls both agents
-independently while selecting a shared target.
+global state and outputs a joint action that moves both agents independently.
+The agents are NOT told which POI to navigate to — the reward function
+guides them toward the cost-optimal POI.
 
 Observation (35 floats — relative, position-invariant):
     delta_a1_to_pois (6) + delta_a2_to_pois (6) + wall_bits_a1 (4)
     + wall_bits_a2 (4) + cost_components × 3 POIs (15)
     Relative vectors (in [-1,1]) let the policy generalize across positions.
-    Cost components (in [0,1]) use BFS distances for target selection.
+    Cost components (in [0,1]) use BFS distances for navigation decisions.
 
-Action: MultiDiscrete([3, 5, 5])
-    [0] target_idx ∈ {0,1,2}  — which POI both agents navigate to
-    [1] move1      ∈ {0..4}   — agent1 movement (NONE,N,S,W,E)
-    [2] move2      ∈ {0..4}   — agent2 movement (NONE,N,S,W,E)
+Action: MultiDiscrete([5, 5])
+    [0] move1 ∈ {0..4}  — agent1 movement (NONE,N,S,W,E)
+    [1] move2 ∈ {0..4}  — agent2 movement (NONE,N,S,W,E)
 
 Reward: shared
-    +progress        — positive reward only when BFS distance decreases (zero if no progress)
-    -STEP_PENALTY    — per-step penalty = TERMINAL_BONUS / (2 * max_steps)
-    +TERMINAL_BONUS  — cost-scaled bonus when both agents reach the target:
-                       TERMINAL_BONUS * (1 + (1 - cost))  →  cheaper POI = bigger bonus
-Episode ends when both agents reach chosen target or max_steps exceeded.
+    +progress        — positive reward when BFS distance to optimal POI decreases
+    -STEP_PENALTY    — per-step penalty = TERMINAL_BONUS / max_steps
+    +TERMINAL_BONUS  — cost-scaled bonus when both agents meet at ANY POI:
+                       TERMINAL_BONUS * (1 + 2*(1 - cost))  →  cheaper POI = bigger bonus
+Episode ends when both agents meet at the same POI or max_steps exceeded.
 """
 from __future__ import annotations
 
@@ -128,10 +128,10 @@ class PoINavigationEnv(gym.Env):
     Centralized cooperative navigation environment.
 
     A single "god-camera" controller observes the full global state and
-    outputs a joint action: target POI + independent moves for both agents.
-    Both agents navigate to the same chosen POI.
+    outputs a joint action: independent moves for both agents.
+    The reward function guides agents toward the cost-optimal POI.
 
-    Action space: MultiDiscrete([3, 5, 5])
+    Action space: MultiDiscrete([5, 5])
     """
 
     metadata = {"render_modes": []}
@@ -154,25 +154,23 @@ class PoINavigationEnv(gym.Env):
         self.weights = DEFAULT_WEIGHTS if weights is None else weights
 
         self.TERMINAL_BONUS = terminal_bonus
-        self.STEP_PENALTY = terminal_bonus / (2.0 * max_steps)
+        self.STEP_PENALTY = terminal_bonus / max_steps
         self.PROGRESS_SCALE = progress_scale
 
         self.observation_space = gym.spaces.Box(
             low=-1.0, high=1.0, shape=(_OBS_DIM,), dtype=np.float32
         )
-        self.action_space = gym.spaces.MultiDiscrete([3, 5, 5])
+        self.action_space = gym.spaces.MultiDiscrete([5, 5])
 
         self._rng = np.random.default_rng(seed)
         self._agent1_pos: tuple[int, int] = (0, 0)
         self._agent2_pos: tuple[int, int] = (0, 0)
         self._pois: list[tuple[int, int]] = []
-        self._target_poi: tuple[int, int] = (0, 0)
         self._obstacles: FrozenSet[tuple[int, int]] = frozenset()
         self._step_count: int = 0
 
         self._poi_dist_maps: list[dict[tuple[int, int], float]] = []
-        self._target_idx: int = 0
-        self._prev_target_idx: int = -1
+        self._optimal_poi_idx: int = 0
         self._init_agent1_pos: tuple[int, int] = (0, 0)
         self._init_agent2_pos: tuple[int, int] = (0, 0)
 
@@ -249,9 +247,19 @@ class PoINavigationEnv(gym.Env):
             _bfs_dist_map(poi, self._obstacles, self.rows, self.cols) for poi in self._pois
         ]
         self._step_count = 0
-        self._target_poi = self._pois[0]
-        self._target_idx = 0
-        self._prev_target_idx = -1
+
+        max_dist = float(self.rows + self.cols)
+        costs = []
+        for dist_map in self._poi_dist_maps:
+            d1 = min(dist_map.get(self._agent1_pos, float("inf")), max_dist)
+            d2 = min(dist_map.get(self._agent2_pos, float("inf")), max_dist)
+            te_a = d1 / max_dist
+            te_h = d2 / max_dist
+            energy = 0.6 * te_a + 0.4 * te_h
+            privacy = 1.0 - te_h
+            ttm = max(te_a, te_h)
+            costs.append(sum(w * v for w, v in zip(self.weights, (te_a, te_h, energy, privacy, ttm))))
+        self._optimal_poi_idx = int(np.argmin(costs))
 
         return self._get_obs(), {}
 
@@ -273,57 +281,54 @@ class PoINavigationEnv(gym.Env):
         action: np.ndarray | list | int,
     ) -> tuple[np.ndarray, float, bool, bool, dict]:
         """
-        action: MultiDiscrete [target_idx, move1, move2]
-                OR flat int (target_idx * 25 + move1 * 5 + move2) for backwards compat.
+        action: MultiDiscrete [move1, move2]
+                OR flat int (move1 * 5 + move2) via FlatActionWrapper.
         """
         if isinstance(action, (int, np.integer)):
             a = int(action)
-            target_idx = min(a // 25, 2)
-            move1 = (a % 25) // 5
+            move1 = a // 5
             move2 = a % 5
         else:
             arr = np.asarray(action, dtype=int).ravel()
-            target_idx = int(arr[0])
-            move1 = int(arr[1])
-            move2 = int(arr[2])
-
-        self._prev_target_idx = target_idx
-        self._target_idx = target_idx
-        self._target_poi = self._pois[target_idx]
+            move1 = int(arr[0])
+            move2 = int(arr[1])
 
         max_dist = float(self.rows + self.cols)
-        target_map = self._poi_dist_maps[target_idx]
+        optimal_map = self._poi_dist_maps[self._optimal_poi_idx]
 
-        prev_dist1 = min(target_map.get(self._agent1_pos, float("inf")), max_dist)
-        prev_dist2 = min(target_map.get(self._agent2_pos, float("inf")), max_dist)
+        prev_dist1 = min(optimal_map.get(self._agent1_pos, float("inf")), max_dist)
+        prev_dist2 = min(optimal_map.get(self._agent2_pos, float("inf")), max_dist)
 
-        if self._agent1_pos != self._target_poi:
-            self._agent1_pos = self._try_move(self._agent1_pos, move1)
-        if self._agent2_pos != self._target_poi:
-            self._agent2_pos = self._try_move(self._agent2_pos, move2)
+        self._agent1_pos = self._try_move(self._agent1_pos, move1)
+        self._agent2_pos = self._try_move(self._agent2_pos, move2)
         self._step_count += 1
 
-        dist1 = min(target_map.get(self._agent1_pos, float("inf")), max_dist)
-        dist2 = min(target_map.get(self._agent2_pos, float("inf")), max_dist)
+        dist1 = min(optimal_map.get(self._agent1_pos, float("inf")), max_dist)
+        dist2 = min(optimal_map.get(self._agent2_pos, float("inf")), max_dist)
 
-        # Progress: only reward forward movement, zero if no progress (anti-oscillation)
         progress = (prev_dist1 + prev_dist2 - dist1 - dist2) / (2.0 * max_dist)
         progress_reward = max(0.0, progress) * self.PROGRESS_SCALE
 
-        both_arrived = (self._agent1_pos == self._target_poi
-                        and self._agent2_pos == self._target_poi)
+        # Check if both agents met at the same POI
+        arrived_poi_idx: int | None = None
+        for i, poi in enumerate(self._pois):
+            if self._agent1_pos == poi and self._agent2_pos == poi:
+                arrived_poi_idx = i
+                break
 
-        # Terminal bonus scaled by cost (from initial positions): cheaper POI → bigger reward
+        both_arrived = arrived_poi_idx is not None
+
         if both_arrived:
-            init_d1 = min(target_map.get(self._init_agent1_pos, float("inf")), max_dist)
-            init_d2 = min(target_map.get(self._init_agent2_pos, float("inf")), max_dist)
+            arrived_map = self._poi_dist_maps[arrived_poi_idx]
+            init_d1 = min(arrived_map.get(self._init_agent1_pos, float("inf")), max_dist)
+            init_d2 = min(arrived_map.get(self._init_agent2_pos, float("inf")), max_dist)
             te_a = init_d1 / max_dist
             te_h = init_d2 / max_dist
             energy = 0.6 * te_a + 0.4 * te_h
             privacy = 1.0 - te_h
             ttm = max(te_a, te_h)
             cost = sum(w * v for w, v in zip(self.weights, (te_a, te_h, energy, privacy, ttm)))
-            terminal_bonus = self.TERMINAL_BONUS * (1.0 + (1.0 - cost))
+            terminal_bonus = self.TERMINAL_BONUS * (1.0 + 2.0 * (1.0 - cost))
         else:
             cost = 0.0
             terminal_bonus = 0.0
@@ -337,24 +342,24 @@ class PoINavigationEnv(gym.Env):
         info = {
             "agent1_pos": self._agent1_pos,
             "agent2_pos": self._agent2_pos,
-            "target_poi": self._target_poi,
-            "target_idx": self._target_idx,
             "pois": self._pois.copy(),
             "obstacles": self._obstacles,
             "step": self._step_count,
             "both_arrived": both_arrived,
+            "arrived_poi_idx": arrived_poi_idx,
+            "optimal_poi_idx": self._optimal_poi_idx,
             "cost": cost,
         }
         return self._get_obs(), reward, terminated, truncated, info
 
 
 class FlatActionWrapper(gym.ActionWrapper):
-    """Wraps MultiDiscrete([3,5,5]) env with Discrete(75) for DQN / Q-Learning."""
+    """Wraps MultiDiscrete([5,5]) env with Discrete(25) for DQN / Q-Learning."""
 
     def __init__(self, env: gym.Env):
         super().__init__(env)
-        self.action_space = gym.spaces.Discrete(75)
+        self.action_space = gym.spaces.Discrete(25)
 
     def action(self, act: int) -> np.ndarray:
         a = int(act)
-        return np.array([a // 25, (a % 25) // 5, a % 5], dtype=int)
+        return np.array([a // 5, a % 5], dtype=int)

@@ -6,9 +6,10 @@ Three panels run the same scenario (same positions + obstacles) simultaneously,
 each driven by a different algorithm: Q-Learning, DQN, PPO.
 
 POI colours:
-  Green  — POI chosen by the model (model's target)
-  Blue   — POI chosen by the cost-optimal baseline
-  Cyan   — POI where model and baseline agree
+  Blue   — cost-optimal POI (baseline)
+  Green  — POI where both agents arrived (non-optimal)
+  Cyan   — both agents arrived at the cost-optimal POI
+  Grey   — other POIs
 
 Usage:
   python demo.py                          # 5 scenarios, 8x8 grid
@@ -65,9 +66,9 @@ _ENV_ID_MAP = {
 
 COLOR_AGENT1 = (0, 0, 180, 255)         # blue: agent1
 COLOR_AGENT2 = (180, 0, 0, 255)         # red: agent2
-COLOR_MODEL_TARGET = (0, 160, 0, 255)   # green: model's chosen POI
+COLOR_ARRIVED_POI = (0, 160, 0, 255)    # green: POI where agents arrived (non-optimal)
 COLOR_OPTIMAL_POI = (0, 100, 220, 255)  # blue: cost-optimal POI
-COLOR_AGREE_POI = (0, 200, 200, 255)    # cyan: model and baseline agree
+COLOR_AGREE_POI = (0, 200, 200, 255)    # cyan: arrived at cost-optimal POI
 COLOR_OTHER_POI = (110, 110, 110, 255)  # grey: other POIs
 COLOR_OBSTACLE = (50, 50, 50, 255)      # dark: obstacles
 
@@ -85,7 +86,7 @@ def _to_flat(action) -> int:
     if isinstance(action, (int, np.integer)):
         return int(action)
     a = np.asarray(action).ravel()
-    return int(a[0]) * 25 + int(a[1]) * 5 + int(a[2])
+    return int(a[0]) * 5 + int(a[1])
 
 
 def _load_ppo(size_tag: str) -> PredictFn:
@@ -137,9 +138,9 @@ def _make_badge_fn(
     """Return a _draw_badge function for one panel, using panel-local coordinates.
 
     POI colours:
-      Green  — model's chosen target
-      Blue   — cost-optimal baseline target
-      Cyan   — both agree on this POI
+      Blue   — cost-optimal baseline POI
+      Green  — POI where both agents arrived (non-optimal)
+      Cyan   — both agents arrived at the cost-optimal POI
       Grey   — other POIs
     """
     rows, cols = nav_env.grid_size
@@ -147,22 +148,22 @@ def _make_badge_fn(
     def draw_badge(row: int, col: int, _level: int) -> None:
         cell = (row, col)
         obstacles = nav_env._obstacles
-        model_target = nav_env._target_poi
         optimal_poi = nav_env._pois[optimal_idx]
         pois = nav_env._pois
         a1 = nav_env._agent1_pos
         a2 = nav_env._agent2_pos
 
+        both_here = (a1 == cell and a2 == cell and cell in pois)
+
         if cell in obstacles:
             label, color = "#", COLOR_OBSTACLE
         elif cell in pois:
             idx = pois.index(cell)
-            is_model = (cell == model_target)
             is_optimal = (cell == optimal_poi)
-            if is_model and is_optimal:
+            if both_here and is_optimal:
                 label, color = f"P{idx+1}", COLOR_AGREE_POI
-            elif is_model:
-                label, color = f"P{idx+1}", COLOR_MODEL_TARGET
+            elif both_here:
+                label, color = f"P{idx+1}", COLOR_ARRIVED_POI
             elif is_optimal:
                 label, color = f"P{idx+1}", COLOR_OPTIMAL_POI
             else:
@@ -180,7 +181,7 @@ def _make_badge_fn(
         pyglet.text.Label(
             label,
             font_size=10,
-            bold=(cell == model_target or cell == optimal_poi),
+            bold=(both_here or cell == optimal_poi),
             x=x,
             y=y,
             anchor_x="center",
@@ -218,7 +219,7 @@ def _sync_lbf(lbf: ForagingEnv, nav_env: PoINavigationEnv) -> None:
     rows, cols = nav_env.grid_size
     lbf.field = np.zeros((rows, cols), dtype=np.int32)  # type: ignore[assignment]
     for poi in nav_env._pois:
-        lbf.field[poi[0], poi[1]] = 2 if poi == nav_env._target_poi else 1
+        lbf.field[poi[0], poi[1]] = 1
     lbf.players[0].position = tuple(nav_env._agent1_pos)
     lbf.players[1].position = tuple(nav_env._agent2_pos)
     lbf.players[0].level = 1
@@ -385,7 +386,7 @@ def run_demo(n_scenarios: int, grid_size: tuple[int, int] = (64, 64)) -> None:
             time.sleep(0.15)
 
         results = [
-            f"{PANEL_TITLES[i]}: {'arrived' if nav_envs[i]._agent1_pos == nav_envs[i]._target_poi and nav_envs[i]._agent2_pos == nav_envs[i]._target_poi else 'timeout'} ({nav_envs[i]._step_count} steps)"
+            f"{PANEL_TITLES[i]}: {'arrived' if any(nav_envs[i]._agent1_pos == p and nav_envs[i]._agent2_pos == p for p in nav_envs[i]._pois) else 'timeout'} ({nav_envs[i]._step_count} steps)"
             for i in range(N_PANELS)
         ]
         if timed_out:
