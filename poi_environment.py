@@ -19,7 +19,7 @@ Action: MultiDiscrete([3, 5, 5])
 Reward: shared
     +progress        — reward for each step that reduces total BFS distance
     -STEP_PENALTY    — per-step penalty = TERMINAL_BONUS / (2 * max_steps)
-    -SWITCH_PENALTY  — target-switch penalty = TERMINAL_BONUS * 0.10 per switch
+    -SWITCH_PENALTY  — target-switch penalty = TERMINAL_BONUS * 0.05 per switch
     +TERMINAL_BONUS  — bonus (5.0) when both agents reach the target
 Episode ends when both agents reach chosen target or max_steps exceeded.
 """
@@ -144,7 +144,7 @@ class PoINavigationEnv(gym.Env):
         weights: tuple[float, ...] | None = None,
         seed: int | None = None,
         terminal_bonus: float = 5.0,
-        switch_penalty_frac: float = 0.10,
+        switch_penalty_frac: float = 0.05,
         progress_scale: float = 2.0,
     ):
         super().__init__()
@@ -221,7 +221,7 @@ class PoINavigationEnv(gym.Env):
             for c in range(self.cols)
             if (r, c) not in obstacles
         }
-        obstacles |= all_free - visited
+        obstacles |= (all_free - visited) - occupied
         return frozenset(obstacles)
 
     # ------------------------------------------------------------------

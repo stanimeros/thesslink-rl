@@ -122,7 +122,7 @@ def _save_history(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def train_ppo(
-    total_timesteps: int = 500_000,
+    total_timesteps: int = 1_000_000,
     seed: int = 42,
     eval_freq: int = 25_000,
     grid_size: tuple[int, int] = (64, 64),
@@ -201,7 +201,7 @@ def train_ppo(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def train_dqn(
-    total_timesteps: int = 500_000,
+    total_timesteps: int = 1_000_000,
     seed: int = 42,
     eval_freq: int = 25_000,
     grid_size: tuple[int, int] = (64, 64),
@@ -293,8 +293,8 @@ _COST_STRIDE = 5
 def _discretize_nav(obs: np.ndarray) -> int:
     """
     Compact discrete state for tabular Q-Learning.
-    State = (best_poi, wall_bits_a1, dir_a1→target, dist_a1, dir_a2→target, dist_a2)
-    Total states: 3 × 16 × 8 × 3 × 8 × 3 = 27,648
+    State = (best_poi, wall_a1, dir_a1→target, dist_a1, wall_a2, dir_a2→target, dist_a2)
+    Total states: 3 × 16 × 8 × 3 × 16 × 8 × 3 = 442,368
     """
     costs = [
         obs[_COST_START + i * _COST_STRIDE] * 0.20
@@ -306,26 +306,27 @@ def _discretize_nav(obs: np.ndarray) -> int:
     ]
     best_poi = int(np.argmin(costs))
 
-    wall_bits = int(obs[12]) * 8 + int(obs[13]) * 4 + int(obs[14]) * 2 + int(obs[15])
+    wall_a1 = int(obs[12]) * 8 + int(obs[13]) * 4 + int(obs[14]) * 2 + int(obs[15])
 
-    # Direction a1→best POI from relative deltas (obs[0:6])
     dr1, dc1 = float(obs[best_poi * 2]), float(obs[best_poi * 2 + 1])
     angle_a1 = int((np.arctan2(dc1, dr1) + np.pi) / (np.pi / 4)) % 8 if (abs(dr1) + abs(dc1)) > 1e-6 else 0
 
     te_a = float(obs[_COST_START + best_poi * _COST_STRIDE])
     dist_a1 = 0 if te_a < 0.15 else (1 if te_a < 0.45 else 2)
 
-    # Direction a2→best POI from relative deltas (obs[6:12])
+    wall_a2 = int(obs[16]) * 8 + int(obs[17]) * 4 + int(obs[18]) * 2 + int(obs[19])
+
     dr2, dc2 = float(obs[6 + best_poi * 2]), float(obs[7 + best_poi * 2])
     angle_a2 = int((np.arctan2(dc2, dr2) + np.pi) / (np.pi / 4)) % 8 if (abs(dr2) + abs(dc2)) > 1e-6 else 0
 
     te_h = float(obs[_COST_START + best_poi * _COST_STRIDE + 1])
     dist_a2 = 0 if te_h < 0.15 else (1 if te_h < 0.45 else 2)
 
-    return (best_poi * (16 * 8 * 3 * 8 * 3)
-            + wall_bits * (8 * 3 * 8 * 3)
-            + angle_a1 * (3 * 8 * 3)
-            + dist_a1 * (8 * 3)
+    return (best_poi * (16 * 8 * 3 * 16 * 8 * 3)
+            + wall_a1 * (8 * 3 * 16 * 8 * 3)
+            + angle_a1 * (3 * 16 * 8 * 3)
+            + dist_a1 * (16 * 8 * 3)
+            + wall_a2 * (8 * 3)
             + angle_a2 * 3
             + dist_a2)
 
@@ -370,7 +371,7 @@ def _merge_qtables(tables: list[dict]) -> dict:
 
 
 def train_qlearning(
-    total_episodes: int = 200_000,
+    total_episodes: int = 400_000,
     seed: int = 42,
     eval_freq: int = 10_000,
     n_workers: int = 6,
@@ -470,8 +471,8 @@ def main():
     parser.add_argument("--algo", choices=["ppo", "dqn", "qlearning"], default="ppo")
     parser.add_argument("--grid-size", type=int, choices=[8, 32, 64], default=8,
                         help="Grid size (8, 32, or 64)")
-    parser.add_argument("--steps", type=int, default=500_000, help="Timesteps (ppo/dqn)")
-    parser.add_argument("--episodes", type=int, default=200_000, help="Episodes (qlearning)")
+    parser.add_argument("--steps", type=int, default=1_000_000, help="Timesteps (ppo/dqn)")
+    parser.add_argument("--episodes", type=int, default=400_000, help="Episodes (qlearning)")
     parser.add_argument("--workers", type=int, default=6, help="Parallel workers (qlearning)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no-train", action="store_true")

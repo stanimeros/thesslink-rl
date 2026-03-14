@@ -1,26 +1,26 @@
 # ThessLink RL
 
-**Cooperative multi-agent navigation** for meeting point suggestion. Two agents learn to navigate together to the optimal POI on a grid with static obstacles, using a shared RL policy.
+**Cooperative multi-agent navigation** for meeting point suggestion. A centralized controller learns to navigate two agents to the optimal POI on a grid with static obstacles.
 
 ![lb-foraging environment](example.gif)
 
 ## Overview
 
-- **Agents:** Two symmetric agents (agent1, agent2) share a single policy
+- **Architecture:** Centralized "god-camera" controller — a single policy observes both agents and outputs a joint action
 - **Environment:** Grid with ~10% static obstacles (connectivity guaranteed), supports 8×8, 32×32, 64×64
 - **Goal:** Both agents navigate to the same target POI (out of 3 candidates)
 - **Target POI:** The policy selects which POI to navigate to each step, guided by the cost function
 
 ## Cost function
 
-The optimal POI minimizes a weighted cost over A\* path distances:
+The optimal POI minimizes a weighted cost over BFS path distances:
 
 $$\text{cost} = w_{TE_a} \cdot d_A + w_{TE_h} \cdot d_H + w_e \cdot e + w_p \cdot p + w_{TTM} \cdot ttm$$
 
 | Symbol | Formula | Description |
 |--------|---------|-------------|
-| $d_A$ | $\frac{\text{A*}(\text{agent1}, \text{POI})}{D_{\max}}$ | Travel Effort (agent1 → POI), normalized |
-| $d_H$ | $\frac{\text{A*}(\text{agent2}, \text{POI})}{D_{\max}}$ | Travel Effort (agent2 → POI), normalized |
+| $d_A$ | $\frac{\text{BFS}(\text{agent1}, \text{POI})}{D_{\max}}$ | Travel Effort (agent1 → POI), normalized |
+| $d_H$ | $\frac{\text{BFS}(\text{agent2}, \text{POI})}{D_{\max}}$ | Travel Effort (agent2 → POI), normalized |
 | $D_{\max}$ | $\text{rows} + \text{cols}$ | Max distance on grid |
 | $e$ | $0.2 + 0.6 \cdot d_H$ | Energy expenditure, range $[0.2, 0.8]$ |
 | $p$ | $1 - d_H$ | Privacy (higher when POI near agent2) |
@@ -32,32 +32,44 @@ The highest weight is on $d_H$ (human travel effort), prioritising the human's c
 
 ## Reward
 
-Each step the agents receive a shared reward:
+Each step the agents receive a shared reward with four components:
 
-$$r = -\text{cost}(\text{chosen POI}) - 0.01$$
+$$r = \text{progress} - \text{step\_penalty} - \text{switch\_penalty} + \text{terminal\_bonus}$$
 
-The step penalty encourages reaching the target quickly. The policy is penalised proportionally to how suboptimal its POI choice is at every step.
+| Component | Value | Description |
+|-----------|-------|-------------|
+| Progress | $\frac{\Delta d_1 + \Delta d_2}{2 \cdot D_{\max}} \times S$ | Reward for reducing BFS distance to target ($S = 2.0$) |
+| Step penalty | $\frac{B}{2 \cdot T_{\max}}$ | Per-step cost encouraging speed ($B = 5.0$, $T_{\max}$ = max steps) |
+| Switch penalty | $0.05 \times B$ | Penalty each time the target POI changes |
+| Terminal bonus | $B$ | Bonus when both agents reach the target |
+
+The terminal bonus ($B = 5.0$) always outweighs the total accumulated step penalties, ensuring arrival is always rewarded.
 
 ## Observation space
 
-Per agent (27 floats):
+Global observation (35 floats, position-invariant):
 
 | Features | Size | Description |
 |----------|------|-------------|
-| `self_pos` | 2 | Normalized (row, col) of this agent |
-| `other_pos` | 2 | Normalized (row, col) of the other agent |
-| `wall_bits_self` | 4 | Binary: N/S/W/E directions blocked for this agent |
-| `wall_bits_other` | 4 | Binary: N/S/W/E directions blocked for the other agent |
-| `cost_components × 3 POIs` | 15 | BFS cost components (te_a, te_h, energy, privacy, ttm) for each POI |
+| `delta_a1_to_pois` | 6 | Relative vectors agent1 → each POI (dr, dc × 3), normalized to [-1, 1] |
+| `delta_a2_to_pois` | 6 | Relative vectors agent2 → each POI (dr, dc × 3), normalized to [-1, 1] |
+| `wall_bits_a1` | 4 | Binary: N/S/W/E blocked for agent1 |
+| `wall_bits_a2` | 4 | Binary: N/S/W/E blocked for agent2 |
+| `cost_components × 3 POIs` | 15 | (te_a, te_h, energy, privacy, ttm) per POI |
 
-Wall bits prevent the model from getting stuck in deterministic loops at obstacles.
+Relative vectors make the policy position-invariant: it sees "POI is 3 cells north" instead of absolute coordinates.
 
 ## Action space
 
-`Discrete(15)` — composite action: `target_idx * 5 + move`
+`MultiDiscrete([3, 5, 5])` — joint action controlling both agents:
 
-- `target_idx ∈ {0, 1, 2}` — which POI to navigate to
-- `move ∈ {NONE, N, S, W, E}` — movement direction
+| Index | Range | Description |
+|-------|-------|-------------|
+| 0 | {0, 1, 2} | Target POI index |
+| 1 | {0, 1, 2, 3, 4} | Agent1 movement (NONE, N, S, W, E) |
+| 2 | {0, 1, 2, 3, 4} | Agent2 movement (NONE, N, S, W, E) |
+
+DQN and Q-Learning use a `FlatActionWrapper` that maps `Discrete(75)` to the equivalent MultiDiscrete encoding: `flat = target × 25 + move1 × 5 + move2`.
 
 ## Algorithms
 
@@ -65,9 +77,9 @@ Three RL categories are compared on the same environment:
 
 | Category | Algorithm | Notes |
 |----------|-----------|-------|
-| **Tabular RL** | Q-Learning | Compact discrete state (1,152 states); tractable for tabular RL |
-| **Deep Value-based RL** | DQN | Off-policy, replay buffer, ε-greedy exploration |
-| **Policy Gradient (Actor-Critic)** | PPO | On-policy, 8 parallel envs via SubprocVecEnv |
+| **Tabular RL** | Q-Learning | Compact discrete state (442,368 states); parallel workers with Q-table merging |
+| **Deep Value-based RL** | DQN | Off-policy, replay buffer, ε-greedy; `Discrete(75)` via FlatActionWrapper |
+| **Policy Gradient (Actor-Critic)** | PPO | On-policy, 6 parallel envs via SubprocVecEnv; native `MultiDiscrete([3,5,5])` |
 
 ## Setup
 
@@ -81,14 +93,14 @@ pip install -r requirements.txt
 ## Training
 
 ```bash
-# PPO — 500k steps, 8 parallel envs
+# PPO — 1M steps, 6 parallel envs
 python navigation_train.py --algo ppo --grid-size 8
 
-# DQN — 500k steps
+# DQN — 1M steps, 6 parallel envs
 python navigation_train.py --algo dqn --grid-size 8
 
-# Q-Learning — 200k episodes
-python navigation_train.py --algo qlearning --grid-size 8
+# Q-Learning — 400k episodes, 6 parallel workers
+python navigation_train.py --algo qlearning --grid-size 8 --workers 6
 ```
 
 Supported grid sizes: `8`, `32`, `64`. Each run saves the model and training history under `models/<algo>/`.
@@ -125,10 +137,11 @@ POI colour coding per panel:
 
 ```
 thesslink-rl/
-├── cost_function.py        # astar_distance, cost_components, cost_optimal_baseline
-├── poi_environment.py      # PoINavigationEnv (27-float obs, wall bits, shared policy)
-├── navigation_train.py     # Training: PPO (SubprocVecEnv), DQN, Q-Learning
+├── cost_function.py        # bfs_distance, cost_components, cost_optimal_baseline
+├── poi_environment.py      # PoINavigationEnv (35-float obs, MultiDiscrete, FlatActionWrapper)
+├── navigation_train.py     # Training: PPO, DQN (SubprocVecEnv), Q-Learning (parallel workers)
 ├── demo.py                 # 3-panel navigation demo
+├── training.ipynb          # Interactive training notebook
 ├── models/
 │   ├── ppo/                # nav_ppo_<size>.zip + training_history
 │   ├── dqn/                # nav_dqn_<size>.zip + training_history
