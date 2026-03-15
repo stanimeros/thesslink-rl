@@ -25,9 +25,9 @@ Both agents are controlled by a **single centralized policy** that observes the 
 
 The policy must guide **both agents to meet at the cost-optimal POI** — the candidate meeting point that minimizes a weighted cost over travel effort, energy consumption, privacy risk, and time-to-meet (see [Cost function](#cost-function) below).
 
-The policy is **not told which POI is optimal**. It must infer this from the observation (cost components per POI) and learn the preference through the reward signal.
+The observation includes **initial costs per POI** (frozen at episode start) so the policy has a stable, consistent ranking of which POI is optimal. Dynamic cost components (updated each step) provide obstacle-aware navigation context.
 
-An episode ends successfully when both agents occupy the same optimal POI cell simultaneously. If they do not meet within `max_steps`, the episode is truncated.
+An episode ends when both agents occupy the same POI cell simultaneously — **success** at the optimal POI (bonus) or **failure** at a wrong POI (penalty). If they do not meet within `max_steps`, the episode is truncated.
 
 ---
 
@@ -60,21 +60,22 @@ $$r = \text{progress} - \text{step penalty} + \text{terminal bonus}$$
 
 | Component | Value | Description |
 |-----------|-------|-------------|
-| Progress | $\sum_{i \in \{1,2\}} \max\!\bigl(0,\; d_i^{\text{prev}} - d_i\bigr) / D_{\max} \times S$ | Per-agent, per-step reward for moving closer to the optimal POI ($S = 2.0$). Each agent is rewarded independently — no reward for standing still or moving away. |
+| Progress | $\sum_{i \in \{1,2\}} (d_i^{\text{prev}} - d_i) / D_{\max} \times S$ | Bidirectional per-agent reward ($S = 3.0$). Positive for approaching the optimal POI, **negative for retreating**. |
 | Step penalty | $\frac{B}{T_{\max}}$ | Per-step cost encouraging speed ($B = 5.0$, $T_{\max}$ = max steps) |
 | Terminal bonus | $B \times (1 + 2 \cdot (1 - \text{cost}))$ | Cost-scaled bonus when both agents meet at the **optimal POI** ($5$–$15$ depending on cost). Cheaper POI → larger bonus. |
+| Wrong-POI penalty | $-B$ | Penalty when both agents meet at a **non-optimal POI** ($-5.0$). Episode terminates immediately. |
 
-**Anti-oscillation:** An agent that moves back and forth gets zero progress reward while still paying the step penalty each step — naturally discouraging loops.
+**Anti-oscillation:** Bidirectional progress means an agent that moves back and forth accumulates negative progress reward on top of the step penalty — strongly discouraging loops.
 
 **Freeze:** Once an agent reaches the optimal POI it stops moving, so the other agent must navigate to join it there.
 
-**Non-optimal POIs:** The two other POIs appear in the observation (cost components + relative vectors) as reference points — the model uses them to identify which POI is optimal. They are not valid meeting targets; the episode only terminates at the optimal POI.
+**Non-optimal POIs:** The two other POIs appear in the observation as reference points. Meeting at a non-optimal POI ends the episode with a penalty, giving a clear "wrong target" signal.
 
 ---
 
 ## Observation space
 
-Global observation (35 floats, position-invariant):
+Global observation (39 floats, position-invariant):
 
 | Features | Size | Description |
 |----------|------|-------------|
@@ -82,9 +83,11 @@ Global observation (35 floats, position-invariant):
 | `delta_a2_to_pois` | 6 | Relative vectors agent2 → each POI (dr, dc × 3), normalized to [-1, 1] |
 | `wall_bits_a1` | 4 | Binary: N/S/W/E blocked for agent1 |
 | `wall_bits_a2` | 4 | Binary: N/S/W/E blocked for agent2 |
-| `cost_components × 3 POIs` | 15 | (te_a, te_h, energy, privacy, ttm) per POI, in [0, 1] |
+| `cost_components × 3 POIs` | 15 | (te_a, te_h, energy, privacy, ttm) per POI, in [0, 1] — dynamic, updated each step |
+| `initial_costs` | 3 | Weighted cost per POI, frozen at episode start — stable POI ranking |
+| `step_fraction` | 1 | Current step / max steps — temporal awareness to break loops |
 
-Relative vectors make the policy position-invariant: it sees "POI is 3 cells north" instead of absolute coordinates. The cost components give the policy everything it needs to identify the optimal POI without being told explicitly.
+Relative vectors make the policy position-invariant: it sees "POI is 3 cells north" instead of absolute coordinates. Dynamic cost components provide obstacle-aware navigation context. Initial costs give a stable, consistent ranking of which POI is optimal (the minimum). Step fraction provides temporal context so the policy can adjust behavior over time and avoid deterministic cycles.
 
 ---
 
@@ -175,9 +178,10 @@ POI colour coding per panel:
 ```
 thesslink-rl/
 ├── cost_function.py        # bfs_distance, cost_components, cost_optimal_baseline
-├── poi_environment.py      # PoINavigationEnv (35-float obs, MultiDiscrete([5,5]), FlatActionWrapper)
+├── poi_environment.py      # PoINavigationEnv (39-float obs, MultiDiscrete([5,5]), FlatActionWrapper)
 ├── navigation_train.py     # Training: PPO, DQN (SubprocVecEnv), Q-Learning (parallel workers)
 ├── demo.py                 # 3-panel navigation demo
+├── reward_diagnostic.py    # Terminal-based reward/observation diagnostic
 ├── training.ipynb          # Combined training curves plot
 ├── models/
 │   ├── ppo/                # nav_ppo_<size>.zip + training_history
