@@ -300,8 +300,8 @@ class PoINavigationEnv(gym.Env):
             move2 = int(arr[1])
 
         max_dist = float(self.rows + self.cols)
-        optimal_map = self._poi_dist_maps[self._optimal_poi_idx]
 
+        # Freeze agent at the optimal POI once it arrives
         optimal_poi = self._pois[self._optimal_poi_idx]
         if self._agent1_pos != optimal_poi:
             self._agent1_pos = self._try_move(self._agent1_pos, move1)
@@ -309,9 +309,11 @@ class PoINavigationEnv(gym.Env):
             self._agent2_pos = self._try_move(self._agent2_pos, move2)
         self._step_count += 1
 
-        dist1 = min(optimal_map.get(self._agent1_pos, float("inf")), max_dist)
-        dist2 = min(optimal_map.get(self._agent2_pos, float("inf")), max_dist)
-        combined_dist = dist1 + dist2
+        # Progress: always toward the optimal POI
+        optimal_map = self._poi_dist_maps[self._optimal_poi_idx]
+        d1 = min(optimal_map.get(self._agent1_pos, float("inf")), max_dist)
+        d2 = min(optimal_map.get(self._agent2_pos, float("inf")), max_dist)
+        combined_dist = d1 + d2
 
         if combined_dist < self._best_combined_dist:
             improvement = (self._best_combined_dist - combined_dist) / (2.0 * max_dist)
@@ -320,19 +322,11 @@ class PoINavigationEnv(gym.Env):
         else:
             progress_reward = 0.0
 
-        # Check if both agents met at the same POI
-        arrived_poi_idx: int | None = None
-        for i, poi in enumerate(self._pois):
-            if self._agent1_pos == poi and self._agent2_pos == poi:
-                arrived_poi_idx = i
-                break
-
-        both_arrived = arrived_poi_idx is not None
+        both_arrived = (self._agent1_pos == optimal_poi and self._agent2_pos == optimal_poi)
 
         if both_arrived:
-            arrived_map = self._poi_dist_maps[arrived_poi_idx]
-            init_d1 = min(arrived_map.get(self._init_agent1_pos, float("inf")), max_dist)
-            init_d2 = min(arrived_map.get(self._init_agent2_pos, float("inf")), max_dist)
+            init_d1 = min(optimal_map.get(self._init_agent1_pos, float("inf")), max_dist)
+            init_d2 = min(optimal_map.get(self._init_agent2_pos, float("inf")), max_dist)
             te_a = init_d1 / max_dist
             te_h = init_d2 / max_dist
             energy = 0.6 * te_a + 0.4 * te_h
@@ -357,7 +351,6 @@ class PoINavigationEnv(gym.Env):
             "obstacles": self._obstacles,
             "step": self._step_count,
             "both_arrived": both_arrived,
-            "arrived_poi_idx": arrived_poi_idx,
             "optimal_poi_idx": self._optimal_poi_idx,
             "cost": cost,
         }

@@ -24,7 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
-from cost_function import cost_optimal_baseline, DEFAULT_WEIGHTS
+from cost_function import DEFAULT_WEIGHTS
 from poi_environment import PoINavigationEnv, FlatActionWrapper
 
 MODEL_DIR = Path(__file__).parent / "models"
@@ -68,11 +68,6 @@ def _eval_navigation(
         env = PoINavigationEnv(seed=ep_seed, grid_size=grid_size, max_steps=max_steps)
         obs, _ = env.reset()
 
-        baseline_idx = cost_optimal_baseline(
-            env._pois, env._init_agent1_pos, env._init_agent2_pos,
-            env._obstacles, DEFAULT_WEIGHTS, env.grid_size,
-        )
-
         ep_reward = 0.0
         done = False
         while not done:
@@ -82,8 +77,8 @@ def _eval_navigation(
             done = terminated or truncated
         rewards.append(ep_reward)
         steps_list.append(info["step"])
-        arrived_idx = info.get("arrived_poi_idx")
-        agreements.append(float(arrived_idx is not None and arrived_idx == baseline_idx))
+        # Agreement: did both agents reach the optimal POI?
+        agreements.append(float(info["both_arrived"]))
 
     return {
         "mean_reward": float(np.mean(rewards)),
