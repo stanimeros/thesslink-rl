@@ -1,0 +1,5 @@
+python navigation_train.py --algo ppo --grid-size 8 --steps 500000
+python navigation_train.py --algo dqn --grid-size 8 --steps 500000
+python navigation_train.py --algo qlearning --grid-size 8 --steps 150000
+
+python demo.py
