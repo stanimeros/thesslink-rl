@@ -56,7 +56,7 @@ The highest weight is on $ttm$ (time-to-meet), ensuring both agents arrive quick
 
 Each step the agents receive a shared reward:
 
-$$r = \text{progress} - \text{step\_penalty} + \text{terminal\_bonus}$$
+$$r = \text{progress} - \text{step penalty} + \text{terminal bonus}$$
 
 | Component | Value | Description |
 |-----------|-------|-------------|
