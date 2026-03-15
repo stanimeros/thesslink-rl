@@ -60,13 +60,15 @@ $$r = \text{progress} - \text{step penalty} + \text{terminal bonus}$$
 
 | Component | Value | Description |
 |-----------|-------|-------------|
-| Progress | $\max\!\bigl(0,\;\Delta d_{\text{best}}\bigr) \times S$ | Reward for setting a new **personal best** combined BFS distance to the optimal POI ($S = 2.0$). Only positive progress counts — no reward for standing still or moving away. |
+| Progress | $\sum_{i \in \{1,2\}} \max\!\bigl(0,\; d_i^{\text{prev}} - d_i\bigr) / D_{\max} \times S$ | Per-agent, per-step reward for moving closer to the optimal POI ($S = 2.0$). Each agent is rewarded independently — no reward for standing still or moving away. |
 | Step penalty | $\frac{B}{T_{\max}}$ | Per-step cost encouraging speed ($B = 5.0$, $T_{\max}$ = max steps) |
 | Terminal bonus | $B \times (1 + 2 \cdot (1 - \text{cost}))$ | Cost-scaled bonus when both agents meet at the **optimal POI** ($5$–$15$ depending on cost). Cheaper POI → larger bonus. |
 
-**Anti-oscillation:** Progress is tracked as a running best (`_best_combined_dist`). An agent that oscillates between cells never improves its best distance, so it only accumulates step penalties — naturally discouraging back-and-forth loops.
+**Anti-oscillation:** An agent that moves back and forth gets zero progress reward while still paying the step penalty each step — naturally discouraging loops.
 
 **Freeze:** Once an agent reaches the optimal POI it stops moving, so the other agent must navigate to join it there.
+
+**Non-optimal POIs:** The two other POIs appear in the observation (cost components + relative vectors) as reference points — the model uses them to identify which POI is optimal. They are not valid meeting targets; the episode only terminates at the optimal POI.
 
 ---
 
