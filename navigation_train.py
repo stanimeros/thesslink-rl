@@ -51,7 +51,7 @@ def _eval_navigation(
     predict_fn,
     n_episodes: int = 200,
     seed: int = 99,
-    grid_size: tuple[int, int] = (64, 64),
+    grid_size: tuple[int, int] = (8, 8),
     max_steps: int | None = None,
 ) -> dict:
     """
@@ -59,7 +59,7 @@ def _eval_navigation(
     predict_fn(obs) -> action (flat int for DQN/QL, or array for PPO)
     """
     if max_steps is None:
-        max_steps = max(300, grid_size[0] * grid_size[1] // 2)
+        max_steps = max(grid_size[0] * grid_size[1] // 2, grid_size[0] * 4)
     rng = np.random.default_rng(seed)
     rewards, steps_list, agreements = [], [], []
 
@@ -121,7 +121,7 @@ def train_ppo(
     total_timesteps: int = 1_000_000,
     seed: int = 42,
     eval_freq: int = 25_000,
-    grid_size: tuple[int, int] = (64, 64),
+    grid_size: tuple[int, int] = (8, 8),
 ) -> None:
     from stable_baselines3 import PPO
     from stable_baselines3.common.callbacks import BaseCallback
@@ -131,7 +131,7 @@ def train_ppo(
     save_dir = MODEL_DIR / "ppo"
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    max_steps = max(300, grid_size[0] * grid_size[1] // 2)
+    max_steps = max(grid_size[0] * grid_size[1] // 2, grid_size[0] * 4)
 
     n_envs = 6
     env = SubprocVecEnv([_make_env(grid_size, max_steps, seed + i) for i in range(n_envs)])
@@ -198,7 +198,7 @@ def train_dqn(
     total_timesteps: int = 1_000_000,
     seed: int = 42,
     eval_freq: int = 25_000,
-    grid_size: tuple[int, int] = (64, 64),
+    grid_size: tuple[int, int] = (8, 8),
 ) -> None:
     from stable_baselines3 import DQN
     from stable_baselines3.common.callbacks import BaseCallback
@@ -208,7 +208,7 @@ def train_dqn(
     save_dir = MODEL_DIR / "dqn"
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    max_steps = max(300, grid_size[0] * grid_size[1] // 2)
+    max_steps = max(grid_size[0] * grid_size[1] // 2, grid_size[0] * 4)
 
     n_envs = 6
     env = SubprocVecEnv([_make_env(grid_size, max_steps, seed + i, flat=True) for i in range(n_envs)])
@@ -330,7 +330,7 @@ def _qlearning_worker(args: tuple) -> tuple[dict, dict, float]:
 
     from collections import defaultdict
 
-    max_steps = max(300, grid_size[0] * grid_size[1] // 2)
+    max_steps = max(grid_size[0] * grid_size[1] // 2, grid_size[0] * 4)
     env = PoINavigationEnv(seed=worker_seed, grid_size=grid_size, max_steps=max_steps)
     rng = np.random.default_rng(worker_seed)
     q_table = defaultdict(lambda: np.zeros(_NAV_ACTIONS, dtype=np.float32), q_table_dict)
@@ -382,7 +382,7 @@ def train_qlearning(
     epsilon_start: float = 1.0,
     epsilon_end: float = 0.05,
     epsilon_decay: float = 0.99997,
-    grid_size: tuple[int, int] = (64, 64),
+    grid_size: tuple[int, int] = (8, 8),
 ) -> None:
     """Parallel Q-Learning with periodic merge and evaluation."""
     import multiprocessing as mp
@@ -392,7 +392,7 @@ def train_qlearning(
     save_dir = MODEL_DIR / "qlearning"
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    max_steps = max(300, grid_size[0] * grid_size[1] // 2)
+    max_steps = max(grid_size[0] * grid_size[1] // 2, grid_size[0] * 4)
     model_path = save_dir / f"nav_qtable_{size_tag}.pkl"
 
     hist = _load_history("qlearning", size_tag)
@@ -500,7 +500,7 @@ def main():
             with open(model_path, "rb") as f:
                 q_table = pickle.load(f)
             predict = lambda obs: int(np.argmax(q_table.get(_discretize_nav(obs), np.zeros(_NAV_ACTIONS))))
-        eval_max_steps = max(300, grid_size[0] * grid_size[1] // 2)
+        eval_max_steps = max(grid_size[0] * grid_size[1] // 2, grid_size[0] * 4)
         stats = _eval_navigation(predict, n_episodes=500, grid_size=grid_size, max_steps=eval_max_steps)
         print(f"Reward: {stats['mean_reward']:.3f}  Agreement: {stats['agreement']:.1%}  Steps: {stats['mean_steps']:.1f}")
         return
