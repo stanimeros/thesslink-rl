@@ -1,5 +1,6 @@
-python navigation_train.py --algo ppo --grid-size 8 --steps 500000
-python navigation_train.py --algo dqn --grid-size 8 --steps 500000
-python navigation_train.py --algo qlearning --grid-size 8 --steps 150000
+python3 navigation_train.py --algo ppo --grid-size 8 --steps 500000
+python3 navigation_train.py --algo dqn --grid-size 8 --steps 50000
+python3 navigation_train.py --algo qlearning --grid-size 8 --episodes 50000
 
-python demo.py
+python3 reward_diagnostic.py --seed 42 -n 3
+python3 demo.py
