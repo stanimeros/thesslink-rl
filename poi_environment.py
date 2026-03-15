@@ -3,26 +3,28 @@ Cooperative multi-agent navigation environment for ThessLink RL.
 
 Centralized controller design: a single model sees the full
 global state and outputs a joint action that moves both agents independently.
-The agents are NOT told which POI to navigate to — the reward function
-guides them toward the cost-optimal POI.
 
-Observation (35 floats — relative, position-invariant):
+Observation (39 floats — relative, position-invariant):
     delta_a1_to_pois (6) + delta_a2_to_pois (6) + wall_bits_a1 (4)
     + wall_bits_a2 (4) + cost_components × 3 POIs (15)
+    + initial_costs (3) + step_fraction (1)
     Relative vectors (in [-1,1]) let the policy generalize across positions.
     Cost components (in [0,1]) use BFS distances for navigation decisions.
+    Initial costs are frozen at episode start — stable signal for POI ranking.
+    Step fraction (in [0,1]) provides temporal awareness.
 
 Action: MultiDiscrete([5, 5])
     [0] move1 ∈ {0..4}  — agent1 movement (NONE,N,S,W,E)
     [1] move2 ∈ {0..4}  — agent2 movement (NONE,N,S,W,E)
 
 Reward: shared
-    +progress        — per-agent, per-step: max(0, prev_dist - dist) / max_dist × SCALE
-                       each agent rewarded independently for moving closer to the optimal POI
+    +progress        — per-agent, per-step: (prev_dist - dist) / max_dist × SCALE
+                       bidirectional: positive for approaching, negative for retreating
     -STEP_PENALTY    — per-step penalty = TERMINAL_BONUS / max_steps
     +TERMINAL_BONUS  — cost-scaled bonus when both agents meet at the optimal POI:
                        TERMINAL_BONUS * (1 + 2*(1 - cost))  →  cheaper POI = bigger bonus
-Episode ends when both agents reach the optimal POI or max_steps exceeded.
+    -WRONG_POI       — penalty (−TERMINAL_BONUS) when both agents meet at a wrong POI
+Episode ends when both agents meet at any POI (optimal or wrong) or max_steps exceeded.
 """
 from __future__ import annotations
 
@@ -38,7 +40,7 @@ from cost_function import DEFAULT_WEIGHTS
 _MOVES = [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)]
 _DIRS = _MOVES[1:]  # cardinal directions only
 
-_OBS_DIM = 35
+_OBS_DIM = 39
 
 
 def _wall_bits(
@@ -83,20 +85,23 @@ def _build_global_obs(
     poi_dist_maps: list[dict[tuple[int, int], float]],
     grid_size: tuple[int, int],
     obstacles: FrozenSet[tuple[int, int]],
+    initial_costs: np.ndarray,
+    step_frac: float,
 ) -> np.ndarray:
     """
-    Build 35-float relative observation:
+    Build 39-float relative observation:
       delta_a1_to_pois(6) + delta_a2_to_pois(6) + wall_bits_a1(4)
       + wall_bits_a2(4) + cost_components×3_POIs(15)
+      + initial_costs(3) + step_fraction(1)
 
-    Relative vectors make the policy position-invariant: it sees
-    "POI is 3 cells north" instead of "agent at (2,4), POI at (5,4)".
+    Dynamic cost components reflect current BFS distances (useful for
+    obstacle-aware navigation).  Initial costs are frozen at episode
+    start and give a stable, consistent ranking of which POI is optimal.
     """
     rows, cols = grid_size
     max_dist = float(rows + cols)
     scale_r, scale_c = max(rows - 1, 1), max(cols - 1, 1)
 
-    # Relative vectors: agent → each POI, normalized to [-1, 1]
     deltas_a1 = np.array(
         [v for poi in pois for v in ((poi[0] - agent1_pos[0]) / scale_r,
                                      (poi[1] - agent1_pos[1]) / scale_c)],
@@ -121,6 +126,9 @@ def _build_global_obs(
         privacy = 1.0 - te_h
         ttm = max(te_a, te_h)
         parts.append(np.array([te_a, te_h, energy, privacy, ttm], dtype=np.float32))
+
+    parts.append(initial_costs.astype(np.float32))
+    parts.append(np.array([step_frac], dtype=np.float32))
     return np.concatenate(parts).astype(np.float32)
 
 
@@ -145,7 +153,7 @@ class PoINavigationEnv(gym.Env):
         weights: tuple[float, ...] | None = None,
         seed: int | None = None,
         terminal_bonus: float = 5.0,
-        progress_scale: float = 2.0,
+        progress_scale: float = 3.0,
     ):
         super().__init__()
         self.grid_size = grid_size
@@ -174,6 +182,7 @@ class PoINavigationEnv(gym.Env):
         self._optimal_poi_idx: int = 0
         self._init_agent1_pos: tuple[int, int] = (0, 0)
         self._init_agent2_pos: tuple[int, int] = (0, 0)
+        self._initial_costs: np.ndarray = np.zeros(3, dtype=np.float32)
 
     # ------------------------------------------------------------------
     # Obstacle generation with connectivity guarantee
@@ -260,6 +269,7 @@ class PoINavigationEnv(gym.Env):
             privacy = 1.0 - te_h
             ttm = max(te_a, te_h)
             costs.append(sum(w * v for w, v in zip(self.weights, (te_a, te_h, energy, privacy, ttm))))
+        self._initial_costs = np.array(costs, dtype=np.float32)
         self._optimal_poi_idx = int(np.argmin(costs))
 
         return self._get_obs(), {}
@@ -268,6 +278,8 @@ class PoINavigationEnv(gym.Env):
         return _build_global_obs(
             self._agent1_pos, self._agent2_pos,
             self._pois, self._poi_dist_maps, self.grid_size, self._obstacles,
+            self._initial_costs,
+            self._step_count / self.max_steps,
         )
 
     def _try_move(self, pos: tuple[int, int], action: int) -> tuple[int, int]:
@@ -311,14 +323,21 @@ class PoINavigationEnv(gym.Env):
         d1 = min(optimal_map.get(self._agent1_pos, float("inf")), max_dist)
         d2 = min(optimal_map.get(self._agent2_pos, float("inf")), max_dist)
 
-        # Per-agent progress: each agent rewarded independently for moving closer
-        progress1 = max(0.0, prev_d1 - d1) / max_dist
-        progress2 = max(0.0, prev_d2 - d2) / max_dist
+        # Bidirectional progress: reward approach, penalize retreat
+        progress1 = (prev_d1 - d1) / max_dist
+        progress2 = (prev_d2 - d2) / max_dist
         progress_reward = (progress1 + progress2) * self.PROGRESS_SCALE
 
-        both_arrived = (self._agent1_pos == optimal_poi and self._agent2_pos == optimal_poi)
+        both_at_optimal = (self._agent1_pos == optimal_poi and self._agent2_pos == optimal_poi)
+        wrong_poi_met = False
+        if not both_at_optimal:
+            wrong_poi_met = any(
+                self._agent1_pos == poi and self._agent2_pos == poi
+                for i, poi in enumerate(self._pois)
+                if i != self._optimal_poi_idx
+            )
 
-        if both_arrived:
+        if both_at_optimal:
             init_d1 = min(optimal_map.get(self._init_agent1_pos, float("inf")), max_dist)
             init_d2 = min(optimal_map.get(self._init_agent2_pos, float("inf")), max_dist)
             te_a = init_d1 / max_dist
@@ -328,15 +347,18 @@ class PoINavigationEnv(gym.Env):
             ttm = max(te_a, te_h)
             cost = sum(w * v for w, v in zip(self.weights, (te_a, te_h, energy, privacy, ttm)))
             terminal_bonus = self.TERMINAL_BONUS * (1.0 + 2.0 * (1.0 - cost))
+        elif wrong_poi_met:
+            cost = 0.0
+            terminal_bonus = -self.TERMINAL_BONUS
         else:
             cost = 0.0
             terminal_bonus = 0.0
 
         reward = progress_reward - self.STEP_PENALTY + terminal_bonus
-        reward = float(np.clip(reward, -10.0, 10.0))
+        reward = float(np.clip(reward, -20.0, 20.0))
 
-        terminated = both_arrived
-        truncated = self._step_count >= self.max_steps
+        terminated = both_at_optimal or wrong_poi_met
+        truncated = not terminated and self._step_count >= self.max_steps
 
         info = {
             "agent1_pos": self._agent1_pos,
@@ -344,7 +366,8 @@ class PoINavigationEnv(gym.Env):
             "pois": self._pois.copy(),
             "obstacles": self._obstacles,
             "step": self._step_count,
-            "both_arrived": both_arrived,
+            "both_arrived": both_at_optimal,
+            "wrong_poi": wrong_poi_met,
             "optimal_poi_idx": self._optimal_poi_idx,
             "cost": cost,
         }

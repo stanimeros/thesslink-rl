@@ -143,7 +143,7 @@ def run_scenario(grid_size: tuple[int, int], seed: int) -> dict:
                     g[r][c] = _cell(str(int(d)), RED, cw)
         _print_grid(f"BFS distance → optimal P{oi + 1}", g, rows, cols, cw)
 
-    # ── 3 & 4  Observation-implied optimal (each agent varies) ────────────
+    # ── 3 & 4  Dynamic-cost mismatch (each agent varies) ─────────────────
     mm1 = mm2 = 0
     free_n = 0
 
@@ -176,19 +176,28 @@ def run_scenario(grid_size: tuple[int, int], seed: int) -> dict:
 
     if show:
         _print_grid(
-            f"Obs-implied optimal when Agent1 moves (Agent2 fixed)\n"
+            f"DYNAMIC cost mismatch when Agent1 moves (Agent2 fixed)\n"
             f"    {GRN}green = correct{RST}   {RED}red = MISMATCH{RST}"
             f"   ({mm1}/{free_n} = {p1:.0f}%)",
             g1, rows, cols, cw,
         )
         _print_grid(
-            f"Obs-implied optimal when Agent2 moves (Agent1 fixed)\n"
+            f"DYNAMIC cost mismatch when Agent2 moves (Agent1 fixed)\n"
             f"    {GRN}green = correct{RST}   {RED}red = MISMATCH{RST}"
             f"   ({mm2}/{free_n} = {p2:.0f}%)",
             g2, rows, cols, cw,
         )
 
-    # ── 5  Net single-agent reward per step ───────────────────────────────
+    # ── 4b  Initial-cost (FIXED) — should be 0% mismatch ──────────────────
+    init_opt = int(np.argmin(env._initial_costs))
+    init_ok = init_opt == oi
+    if show:
+        print(f"\n  {BOLD}INITIAL costs (frozen at reset):{RST}  "
+              f"{' '.join(f'P{i+1}={c:.3f}' for i, c in enumerate(env._initial_costs))}"
+              f"  →  min = {GRN}P{init_opt+1}{RST}"
+              f"  {'✓ matches reward target' if init_ok else RED + '✗ BUG' + RST}")
+
+    # ── 5  Net single-agent reward per step (bidirectional) ─────────────
     cw2 = 6
     if show:
         g = [[None] * cols for _ in range(rows)]
@@ -198,12 +207,14 @@ def run_scenario(grid_size: tuple[int, int], seed: int) -> dict:
                     g[r][c] = _cell("░░", DIM, cw2)
                     continue
                 d_here = om.get((r, c), float("inf"))
-                best = 0.0
+                best = -float("inf")
                 for dr, dc in _DIRS:
                     nr, nc = r + dr, c + dc
                     if 0 <= nr < rows and 0 <= nc < cols and (nr, nc) not in obstacles:
                         d_nb = om.get((nr, nc), float("inf"))
-                        best = max(best, max(0.0, d_nb - d_here) / max_dist * env.PROGRESS_SCALE)
+                        best = max(best, (d_nb - d_here) / max_dist * env.PROGRESS_SCALE)
+                if best == -float("inf"):
+                    best = 0.0
                 net = best - env.STEP_PENALTY
                 if net > 0.005:
                     col = GRN
@@ -231,10 +242,13 @@ def run_scenario(grid_size: tuple[int, int], seed: int) -> dict:
     print(f"  Progress / step (1 ag):  {prog1:.4f}")
     n1 = prog1 - env.STEP_PENALTY
     n2 = 2 * prog1 - env.STEP_PENALTY
-    warn1 = f"  {RED}← NEGATIVE{RST}" if n1 < 0 else ""
+    retreat1 = -prog1 - env.STEP_PENALTY
+    warn1 = f"  {RED}← NEGATIVE{RST}" if n1 < 0 else f"  {GRN}← positive{RST}"
     print(f"  Net (only 1 closer):    {n1:+.4f}{warn1}")
     print(f"  Net (both closer):      {n2:+.4f}")
+    print(f"  Net (1 retreats):       {retreat1:+.4f}  {RED}← bidirectional penalty{RST}")
     print(f"  Terminal bonus:          {env.TERMINAL_BONUS:.1f} – {env.TERMINAL_BONUS * 3:.1f}")
+    print(f"  Wrong-POI penalty:      {-env.TERMINAL_BONUS:.1f}")
 
     print()
     print(f"  BFS Agent1 → optimal:   {bfs1:.0f} steps")
@@ -246,15 +260,9 @@ def run_scenario(grid_size: tuple[int, int], seed: int) -> dict:
     print(f"  Budget ratio:           {ratio:.1f}x{warn_b}")
 
     print()
-    if p1 > 40 or p2 > 40:
-        verdict = f"{RED}HIGH — observation frequently contradicts reward{RST}"
-    elif p1 > 20 or p2 > 20:
-        verdict = f"{YEL}MODERATE — noticeable contradiction{RST}"
-    else:
-        verdict = f"{GRN}LOW — observation mostly agrees with reward{RST}"
-    print(f"  Obs–reward mismatch A1: {mm1}/{free_n} ({p1:.0f}%)")
-    print(f"  Obs–reward mismatch A2: {mm2}/{free_n} ({p2:.0f}%)")
-    print(f"  Verdict:                {verdict}")
+    print(f"  {BOLD}Dynamic cost mismatch{RST} (still present in obs, but no longer sole signal):")
+    print(f"    A1 moves: {mm1}/{free_n} ({p1:.0f}%)   A2 moves: {mm2}/{free_n} ({p2:.0f}%)")
+    print(f"  {BOLD}Initial costs{RST} (frozen in obs): {GRN}always 0% mismatch ✓{RST}")
     print()
 
     return dict(pct1=p1, pct2=p2, budget=ratio, net1=n1, net2=n2)

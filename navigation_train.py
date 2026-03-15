@@ -272,14 +272,17 @@ def train_dqn(
 
 _NAV_ACTIONS = 25
 
-# Observation layout (35 floats — relative):
+# Observation layout (39 floats — relative):
 #   [0:6]   delta_a1_to_pois (dr,dc × 3 POIs)
 #   [6:12]  delta_a2_to_pois (dr,dc × 3 POIs)
 #   [12:16] wall_bits_a1 (N/S/W/E)
 #   [16:20] wall_bits_a2 (N/S/W/E)
 #   [20:35] cost_components × 3 POIs (5 each: te_a, te_h, energy, privacy, ttm)
+#   [35:38] initial_costs (3 floats, frozen at episode start)
+#   [38]    step_fraction
 _COST_START = 20
 _COST_STRIDE = 5
+_INITIAL_COST_START = 35
 
 
 def _discretize_nav(obs: np.ndarray) -> int:
@@ -288,16 +291,7 @@ def _discretize_nav(obs: np.ndarray) -> int:
     State = (best_poi, wall_a1, dir_a1→target, dist_a1, wall_a2, dir_a2→target, dist_a2)
     Total states: 3 × 16 × 8 × 3 × 16 × 8 × 3 = 442,368
     """
-    w = DEFAULT_WEIGHTS
-    costs = [
-        obs[_COST_START + i * _COST_STRIDE] * w[0]
-        + obs[_COST_START + i * _COST_STRIDE + 1] * w[1]
-        + obs[_COST_START + i * _COST_STRIDE + 2] * w[2]
-        + obs[_COST_START + i * _COST_STRIDE + 3] * w[3]
-        + obs[_COST_START + i * _COST_STRIDE + 4] * w[4]
-        for i in range(3)
-    ]
-    best_poi = int(np.argmin(costs))
+    best_poi = int(np.argmin(obs[_INITIAL_COST_START:_INITIAL_COST_START + 3]))
 
     wall_a1 = int(obs[12]) * 8 + int(obs[13]) * 4 + int(obs[14]) * 2 + int(obs[15])
 
